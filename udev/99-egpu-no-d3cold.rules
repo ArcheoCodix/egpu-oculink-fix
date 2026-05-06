@@ -1,0 +1,8 @@
+# Disable D3cold for OCuLink eGPU chain (GPD Win 4 + Minisforum DEG1)
+# D3cold causes the PCIe link to drop and the eGPU to disappear from the bus.
+# OCuLink does not support Surprise removal, so D3cold entry is unsafe.
+# See docs/upstream-todo.md for the proper kernel fix.
+ACTION=="add", SUBSYSTEM=="pci", KERNELS=="0000:64:00.0", ATTR{d3cold_allowed}="0"
+ACTION=="add", SUBSYSTEM=="pci", KERNELS=="0000:65:00.0", ATTR{d3cold_allowed}="0"
+ACTION=="add", SUBSYSTEM=="pci", KERNELS=="0000:66:00.0", ATTR{d3cold_allowed}="0"
+ACTION=="add", SUBSYSTEM=="pci", KERNELS=="0000:66:00.1", ATTR{d3cold_allowed}="0"
