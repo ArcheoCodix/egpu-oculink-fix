@@ -121,46 +121,74 @@ through an intermediate buffer, bypassing the problematic flip path.
   — **already present in kernel 6.19.14** (confirmed in OGC tree)
   — was initially suspected but not the root cause for OCuLink-specific crashes
 
-## 5. [KERNEL/FIRMWARE] MES v12 firmware lockup under full Vulkan load on OCuLink
+## 5. [FIRMWARE] MES v12 null pointer dereference at offset 0x705c (RDNA4)
 
 **Status:** Not submitted
-**Priority:** High — causes CPU hard lockup requiring forced reboot
-**Workaround:** None confirmed. `amdgpu.reset_method=2` is a candidate to prevent CPU lockup.
+**Priority:** Critical — root cause of all Type C crashes; causes GPU hang + occasional CPU hard lockup
+**Workaround:** None. Requires firmware fix from AMD.
 
-### Problem
+### Root cause — confirmed
 
-Under full Vulkan load (100% GPU, ~3333 MHz SCLK), the RDNA4 Unified MES firmware
-(`mes_v12_0_0`) becomes completely unresponsive. All subsequent attempts to reset the
-GPU (ring reset, full MODE1 reset) stall waiting for MES to respond to RESET and
-REMOVE_QUEUE messages. The GPU reset code spins in a kernel ioctl with no timeout,
-causing CPU hard lockup and requiring forced reboot.
+The Unified MES firmware (`gc_12_0_0_uni_mes.bin`, **version 0x89**) crashes at a
+fixed instruction under sustained GPU load, always at the same point:
 
-Observed twice with two different games (Enshrouded, PEAK.exe) both running via Proton.
+```
+[gfxhub] Page fault observed
+Faulty page starting at address: 0x0000000000000000
+Protection fault status register: 0x0
+regCP_MES_INSTR_PNTR  0x0000705c   ← always the same instruction offset
+regCP_MES_HEADER_DUMP 0xdef0def0   ← repeated 8× with incrementing low nibble
+```
+
+The MES firmware dereferences a null pointer (GPU VA 0x0) at code offset 0x705c.
+This triggers a GFXHUB page fault that permanently halts the MES microcontroller.
+All driver messages to MES (RESET, REMOVE_QUEUE) subsequently time out.
+
+**Confirmed in 3 independent crashes across 2 kernel boots, 3 different offenders
+(Enshrouded, PEAK.exe, kwin_wayland), always the same register state.**
+
+### Observed crashes
+
+| Crash | Offender | Recovery |
+|-------|----------|----------|
+| 20260507-001329 | enshrouded.exe | Failed (MODE1 incomplete) |
+| 20260507-221258 | PEAK.exe | Failed (CPU hard lockup) |
+| 20260508-014526 | kwin_wayland* | Succeeded (MODE1 reset) |
+
+*kwin_wayland appeared as offender while GPU was at 100% load from a game session —
+the logged offender is not the cause of the MES crash.
 
 ### Failure sequence
 
 ```
-amdgpu: ring gfx_0.0.0 timeout (Vulkan submission thread, 100% GPU load)
+[gfxhub] Page fault at 0x0 → MES microcontroller halts at offset 0x705c
+60s later: ring gfx_0.0.0 timeout (watchdog fires, logs whatever process last submitted)
 amdgpu: MES(1) failed to respond to msg=RESET
 amdgpu: Ring gfx_0.0.0 reset failed
 amdgpu: GPU reset begin!
-amdgpu: MES(1) failed to respond to msg=REMOVE_QUEUE  (×6)
-watchdog: CPU10: Watchdog detected hard LOCKUP
-watchdog: BUG: soft lockup - CPU#0 stuck for 22s!
+amdgpu: MES(1) failed to respond to msg=REMOVE_QUEUE  (×5–6)
+→ sometimes: CPU hard lockup in reset ioctl spin loop
+→ sometimes: MODE1 reset succeeds and GPU recovers
 ```
 
-### Key parameters
+### Key data for bug report
 
-- `amdgpu.uni_mes=1` is the default for RDNA4 (Unified MES enabled)
-- `amdgpu.reset_method=-1` (auto) tries MES-based reset first, deadlocks if MES is dead
-- `amdgpu.reset_method=2` (mode1) is a hardware bus reset that may bypass MES teardown
-- `linux-firmware-20260410-1.fc44.noarch` is installed (latest available)
+- Firmware file: `gc_12_0_0_uni_mes.bin` (also symlinked as `gc_12_0_1_uni_mes.bin`)
+- Firmware version: `MES feature version: 1, fw version: 0x00000089`
+- MES instruction pointer at crash: `regCP_MES_INSTR_PNTR = 0x0000705c` (consistent)
+- Faulting GPU address: `0x0000000000000000` (null pointer dereference)
+- Header dump FIFO: `0xdef0def0..0xdef7def7` (8 values, consistent)
+- linux-firmware: `20260410-1.fc44` (latest available)
+- `amdgpu.mes_log_enable=1` is active but MES log is not dumped to journal or coredump
+  text — log buffer exists in VRAM but extraction mechanism not implemented in this
+  kernel version's coredump path.
 
 ### Where to file
 
 - freedesktop drm/amd: https://gitlab.freedesktop.org/drm/amd/-/issues
-  Search for: RDNA4 MES firmware lockup OCuLink hard lockup REMOVE_QUEUE
-- Include: full journal from 22:12:56 to 22:14:11 from crash 20260507-221258
+  Keywords: RDNA4 Navi48 MES v12 null pointer 0x705c gfxhub page fault
+- Attach: coredump.bin from crash-20260507-221258 (most complete, includes CPU lockup trace)
+- Attach: full journal sections from all three crashes
 
 ---
 

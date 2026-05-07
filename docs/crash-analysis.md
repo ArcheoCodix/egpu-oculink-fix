@@ -216,98 +216,94 @@ devices in the OCuLink PCIe chain. This prevents any of them from entering D3col
 
 ---
 
-### Type C — MES firmware lockup under full load (crashes 6–7)
+### Type C — MES firmware null pointer dereference (crashes 6–8)
 
-**Observed in:** crashes 20260507-001329 (Enshrouded), 20260507-221258 (PEAK.exe)
+**Observed in:** crashes 20260507-001329 (Enshrouded), 20260507-221258 (PEAK.exe),
+20260508-014526 (kwin_wayland, GPU at full load)
 
 #### Signature
 
 ```
-amdgpu 0000:66:00.0: ring gfx_0.0.0 timeout, signaled seq=N, emitted seq=N+2
-amdgpu 0000:66:00.0:  Process <game>.exe pid XXXX thread Vulkan Submissi pid YYYY
-amdgpu 0000:66:00.0: Starting gfx_0.0.0 ring reset
-amdgpu 0000:66:00.0: MES(1) failed to respond to msg=RESET
-amdgpu 0000:66:00.0: failed to reset legacy queue
-amdgpu 0000:66:00.0: reset via MES failed and try pipe reset -110
-amdgpu 0000:66:00.0: The CPFW hasn't support pipe reset yet.
-amdgpu 0000:66:00.0: Ring gfx_0.0.0 reset failed
-amdgpu 0000:66:00.0: GPU reset begin!. Source:  1
-amdgpu 0000:66:00.0: MES(1) failed to respond to msg=REMOVE_QUEUE  (×6)
-amdgpu 0000:66:00.0: failed to unmap legacy queue  (×6)
-watchdog: CPU10: Watchdog detected hard LOCKUP on cpu 10
-watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [Thread (pooled):YYYY]
+[gfxhub] Page fault observed
+Faulty page starting at address: 0x0000000000000000
+Protection fault status register: 0x0
+regCP_MES_INSTR_PNTR                               0x0000705c
+regCP_MES_HEADER_DUMP                              0xdef0def0  (×8, incrementing)
+
+amdgpu: ring gfx_0.0.0 timeout, signaled seq=N, emitted seq=N+2
+amdgpu: MES(1) failed to respond to msg=RESET
+amdgpu: Ring gfx_0.0.0 reset failed
+amdgpu: GPU reset begin!
+amdgpu: MES(1) failed to respond to msg=REMOVE_QUEUE  (×5–6)
 ```
 
-- Offenders: `enshrouded.exe` (crash 6), `PEAK.exe` (crash 7) — two different games
-- Offending thread: `Vulkan Submissi` in crash 7 — a Vulkan submission thread
-- GPU state at crash: **SCLK ~3333–3342 MHz, VDDGFX=1174 mV, GPU Load=100%**
-- Fence gap: always exactly **2** (same as Type A)
-- MES ring (mes_3.1.0): gap of 1 (signaled=0x35, emitted=0x36 in crash 7)
+- GPU state at crash: **SCLK ~3329–3342 MHz, VDDGFX ~1170–1174 mV, GPU Load=100%**
+- Fence gap: always exactly **2**
+- MES ring (mes_3.1.0): gap of 1 in all crashes (MES had pending work it never completed)
 - No `device lost from bus` — OCuLink link stable (D3cold fix effective)
-- **Recovery failed** in both cases
+- Recovery: **failed** (CPU lockup) in crashes 6–7, **succeeded** (MODE1 reset) in crash 8
 
-#### Failure cascade
+#### Root cause — confirmed
 
-1. `ring gfx_0.0.0` fires the 60-second watchdog
-2. Ring reset attempts to use MES firmware (mes_v12, RDNA4's Unified MES) → MES does not respond
-3. Pipe reset attempted as fallback → `The CPFW hasn't support pipe reset yet` (no CPFW pipe reset on RDNA4)
-4. Ring reset fails → full GPU reset (MODE1) initiated
-5. GPU reset attempts to unmap all queues via MES (REMOVE_QUEUE) → 6 consecutive timeouts
-6. GPU reset code spins waiting for MES → CPU thread stuck in `ioctl()` for >20s
-7. **CPU hard lockup** (CPU 10) and **CPU soft lockup** (CPU 0) — system completely frozen
-8. Forced power-off required
+All three crashes show **identical register state** in the coredump:
 
-The crash in the kernel is not the ring hang itself but the subsequent GPU reset code
-spinning in an ioctl with no way out. The MES firmware (mes_v12_0) is completely
-unresponsive and blocks both the ring reset and the MODE1 GPU reset.
+| Register | Value | Meaning |
+|----------|-------|---------|
+| `regCP_MES_INSTR_PNTR` | `0x0000705c` | MES instruction pointer — always at same offset |
+| `Faulty page address` | `0x0000000000000000` | GPU page fault at address NULL |
+| `regCP_MES_HEADER_DUMP` | `0xdef0..0xdef7` | MES FIFO fill pattern at crash — 8 identical values |
+| MES fw version | `0x00000089` (v137) | Both MES and MES_KIQ, from `gc_12_0_0_uni_mes.bin` |
+
+**The MES firmware (`gc_12_0_0_uni_mes.bin`, version 0x89) crashes at a fixed
+instruction (offset 0x705c in the code section) by performing a memory access to GPU
+virtual address 0x0 — a null pointer dereference inside the firmware.** This causes a
+GFXHUB page fault that permanently freezes the MES microcontroller. All subsequent
+driver messages to MES (RESET, REMOVE_QUEUE) time out because MES is stuck at the
+faulting instruction.
+
+This is **not triggered by a specific game or workload** — the offender logged by
+amdgpu (game process, kwin_wayland) is whichever process last submitted to the GFX
+ring when the 60-second watchdog fires, not the process that caused MES to crash. The
+MES fault happens silently during GPU operation, and the ring timeout is a downstream
+consequence.
+
+#### On the "offender" label
+
+Crash 8 (kwin_wayland, GPU at 100%) shows this clearly: kwin_wayland appears as the
+offender, but the GPU was already at full load from a game session. The MES crashed
+during gaming; when the ring watchdog fired, kwin had submitted the most recent frame
+command and got attributed as the cause. The MES null dereference is the real trigger,
+independent of what process happens to be submitting to the ring.
+
+#### Failure cascade detail
+
+1. MES firmware hits a null pointer dereference at code offset 0x705c
+2. GPU gfxhub raises a page fault at address 0x0 → MES microcontroller halts
+3. 60s later: GFX ring watchdog fires (`ring gfx_0.0.0 timeout`)
+4. Ring reset sends `RESET` to MES → no response (MES halted)
+5. Pipe reset fallback → `CPFW hasn't support pipe reset yet`
+6. Ring reset fails → full GPU reset (MODE1) initiated
+7. MODE1 pre-reset tries to unmap queues: 5–6× `REMOVE_QUEUE` to MES → no response
+8a. **(Crash 7)**: spin loop on attempt 6 → CPU hard lockup → forced reboot required
+8b. **(Crash 8)**: loop exits after 5 attempts → MODE1 hardware reset executes → MES
+    reinitializes → `device wedged, but recovered through reset`
+
+The difference between 8a and 8b is timing/concurrency in the reset code, not a
+structural difference. MODE1 reset eventually works if the REMOVE_QUEUE loop exits
+instead of spinning indefinitely.
 
 #### Steam bus_lock precursor
 
-Both Type C crashes are preceded by a Steam `CHTTPClientThre` / `CJobMgr` bus_lock storm:
+All crashes are preceded by a Steam `CHTTPClientThre` / `CJobMgr` bus_lock storm:
 
-| Crash | Duration | Callbacks suppressed | Gap before crash |
-|-------|----------|---------------------|-----------------|
-| #6 (Enshrouded) | ~6 min | ~71,000 | 7 min |
-| #7 (PEAK.exe) | ~7 min (21:59–22:06) | 169,226 | 6 min |
+| Crash | Suppressed callbacks | Gap before MES crash |
+|-------|---------------------|---------------------|
+| #6 (Enshrouded) | ~71,000 | ~7 min |
+| #7 (PEAK.exe) | 169,226 | ~6 min |
+| #8 (kwin/game) | present (01:42) | ~3 min |
 
-The bus_lock storm ends several minutes before the ring hang — the traps are not the
-direct cause. Whether they contribute to MES instability (e.g., via CPU scheduling
-pressure) is unclear.
-
-#### MES firmware context
-
-The Unified MES (`uni_mes`) is RDNA4's hardware command scheduler firmware, loaded by
-amdgpu as `mes_v12_0_0` IP block. It is enabled by default (`amdgpu.uni_mes=1`) on
-RDNA4 and cannot be easily bypassed at runtime. The `amdgpu.reset_method` parameter
-controls the GPU reset strategy:
-
-```
-reset_method: GPU reset method (-1=auto(default), 0=legacy, 1=mode0, 2=mode1, 3=mode2, 4=baco)
-```
-
-The current auto reset path attempts MES-based ring reset before falling back to
-MODE1. If MES is dead, both fail and the reset code loops indefinitely.
-
-#### Assessment
-
-This is **not game-specific** — two different games (Enshrouded, PEAK.exe) produce the
-identical failure. The common factor is: Vulkan command submission under 100% GPU load
-via OCuLink (PCIe 4.0 x4).
-
-Root cause candidates:
-1. **MES v12 firmware bug** triggered by specific Vulkan command patterns under load
-2. **OCuLink bandwidth/latency** causing MES firmware memory access failures (MES
-   firmware reads its work queue from VRAM; high PCIe traffic on x4 link may cause
-   access latency exceeding MES timeouts)
-3. **Mesa/VKD3D-Proton** generating commands that trigger the MES bug
-
-`linux-firmware-20260410-1.fc44.noarch` is the latest available — no newer MES
-firmware is currently available.
-
-**Potential mitigation to test:** `amdgpu.reset_method=2` (force mode1 reset) may
-bypass the MES REMOVE_QUEUE loop during GPU reset, allowing the MODE1 reset to
-complete and preventing the CPU lockup. The initial ring hang would still occur, but
-the system would recover instead of requiring a forced reboot.
+The bus_lock storm precedes each crash but ends well before the ring timeout. Not the
+direct cause; may contribute to CPU scheduling pressure that influences MES timing.
 
 ---
 
@@ -329,17 +325,12 @@ the system would recover instead of requiring a forced reboot.
 | `pcie_aspm=off` | ASPM already disabled on all OCuLink chain links — no effect. Removed. |
 | f377ea0561c9 patch | Already present in kernel 6.19.14-ogc1.1. Initial diagnosis was incorrect. |
 
-### Candidate mitigation for Type C (untested)
+### Notes on Type C
 
-`amdgpu.reset_method=2` — forces mode1 GPU reset instead of auto. Mode1 is a full
-hardware bus reset; it may bypass the MES REMOVE_QUEUE teardown that currently deadlocks
-during GPU reset, allowing the system to recover from ring hangs instead of CPU-locking.
-The initial ring hang would still occur, but recovery would be automatic.
-
-Parameter exists and is valid (confirmed via `modinfo amdgpu`). To test:
-```bash
-rpm-ostree kargs --append=amdgpu.reset_method=2
-```
+The root cause (MES firmware null dereference at 0x705c) requires a firmware fix from
+AMD. No kernel parameter workaround can prevent the MES crash itself. The recovery
+reliability (MODE1 succeeding vs CPU lockup) depends on timing in the reset code and
+is not controllable via parameters.
 
 ---
 
@@ -367,13 +358,15 @@ rpm-ostree kargs --append=amdgpu.reset_method=2
    driver overrides it or the ACPI _PR3/_S0W objects are being interpreted differently.
    Inspecting the DSDT for the root port (00:03.1) would clarify this.
 
-5. **Why does MES v12 firmware become unresponsive under full Vulkan load on OCuLink?**
-   Two different games (Enshrouded, PEAK.exe) trigger the same failure: MES completely
-   stops responding to all messages (RESET, REMOVE_QUEUE), causing a GPU reset deadlock
-   and CPU lockup. Is this a MES firmware bug with specific command patterns, an OCuLink
-   bandwidth issue causing VRAM access latency for MES, or a combination?
+5. **What triggers the null pointer dereference at MES offset 0x705c?**
+   The MES firmware (v0x89, gc_12_0_0_uni_mes.bin) always crashes at the same
+   instruction under sustained GPU load. The null pointer at that instruction could be:
+   a pointer that should have been initialized by a prior command but wasn't, a race
+   condition in the MES scheduling loop, or a firmware-side timeout that zeroes a
+   pointer incorrectly. AMD has the firmware source and can identify the exact variable.
 
-6. **Would `amdgpu.reset_method=2` (mode1) prevent the CPU lockup cascade?**
-   Mode1 is a full hardware bus reset that does not rely on MES for queue teardown.
-   If it bypasses the REMOVE_QUEUE loop, the system could recover from the ring hang
-   instead of requiring forced reboot. To be tested with the next Type C crash.
+6. **Why does the CPU lockup sometimes occur and sometimes not during MODE1 reset?**
+   Crash 7 (PEAK.exe) caused a CPU hard lockup; crash 8 recovered cleanly via MODE1.
+   The REMOVE_QUEUE loop in the driver ran 6 times in crash 7 before locking up, and
+   5 times in crash 8 before MODE1 executed. This suggests a race condition in the
+   driver's reset code between the loop counter/timeout and some concurrent event.
