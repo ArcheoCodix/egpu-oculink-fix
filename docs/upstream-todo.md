@@ -121,7 +121,50 @@ through an intermediate buffer, bypassing the problematic flip path.
   — **already present in kernel 6.19.14** (confirmed in OGC tree)
   — was initially suspected but not the root cause for OCuLink-specific crashes
 
-## 5. [INVESTIGATE] Correctable PCIe errors on OCuLink chain
+## 5. [KERNEL/FIRMWARE] MES v12 firmware lockup under full Vulkan load on OCuLink
+
+**Status:** Not submitted
+**Priority:** High — causes CPU hard lockup requiring forced reboot
+**Workaround:** None confirmed. `amdgpu.reset_method=2` is a candidate to prevent CPU lockup.
+
+### Problem
+
+Under full Vulkan load (100% GPU, ~3333 MHz SCLK), the RDNA4 Unified MES firmware
+(`mes_v12_0_0`) becomes completely unresponsive. All subsequent attempts to reset the
+GPU (ring reset, full MODE1 reset) stall waiting for MES to respond to RESET and
+REMOVE_QUEUE messages. The GPU reset code spins in a kernel ioctl with no timeout,
+causing CPU hard lockup and requiring forced reboot.
+
+Observed twice with two different games (Enshrouded, PEAK.exe) both running via Proton.
+
+### Failure sequence
+
+```
+amdgpu: ring gfx_0.0.0 timeout (Vulkan submission thread, 100% GPU load)
+amdgpu: MES(1) failed to respond to msg=RESET
+amdgpu: Ring gfx_0.0.0 reset failed
+amdgpu: GPU reset begin!
+amdgpu: MES(1) failed to respond to msg=REMOVE_QUEUE  (×6)
+watchdog: CPU10: Watchdog detected hard LOCKUP
+watchdog: BUG: soft lockup - CPU#0 stuck for 22s!
+```
+
+### Key parameters
+
+- `amdgpu.uni_mes=1` is the default for RDNA4 (Unified MES enabled)
+- `amdgpu.reset_method=-1` (auto) tries MES-based reset first, deadlocks if MES is dead
+- `amdgpu.reset_method=2` (mode1) is a hardware bus reset that may bypass MES teardown
+- `linux-firmware-20260410-1.fc44.noarch` is installed (latest available)
+
+### Where to file
+
+- freedesktop drm/amd: https://gitlab.freedesktop.org/drm/amd/-/issues
+  Search for: RDNA4 MES firmware lockup OCuLink hard lockup REMOVE_QUEUE
+- Include: full journal from 22:12:56 to 22:14:11 from crash 20260507-221258
+
+---
+
+## 6. [INVESTIGATE] Correctable PCIe errors on OCuLink chain
 
 `DevSta: CorrErr+` on 00:03.1 (root port) and 64:00.0 (PCIe switch).
 `DevSta: UnsupReq+` on 64:00.0.
