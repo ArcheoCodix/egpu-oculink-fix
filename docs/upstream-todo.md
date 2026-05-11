@@ -123,7 +123,7 @@ through an intermediate buffer, bypassing the problematic flip path.
 
 ## 5. [FIRMWARE] MES v12 null pointer dereference at offset 0x705c (RDNA4)
 
-**Status:** Not submitted
+**Status:** Submitted — https://gitlab.freedesktop.org/drm/amd/-/issues/5274
 **Priority:** Critical — root cause of all Type C crashes; causes GPU hang + occasional CPU hard lockup
 **Workaround:** None. Requires firmware fix from AMD.
 
@@ -185,14 +185,47 @@ amdgpu: MES(1) failed to respond to msg=REMOVE_QUEUE  (×5–6)
 
 ### Where to file
 
-- freedesktop drm/amd: https://gitlab.freedesktop.org/drm/amd/-/issues
-  Keywords: RDNA4 Navi48 MES v12 null pointer 0x705c gfxhub page fault
-- Attach: coredump.bin from crash-20260507-221258 (most complete, includes CPU lockup trace)
-- Attach: full journal sections from all three crashes
+- freedesktop drm/amd: **Filed — https://gitlab.freedesktop.org/drm/amd/-/issues/5274**
+- Attached: coredump.bin from crash-20260507-221258 + journal sections from crashes 1 and 2
+
+### Firmware update — fix confirmed
+
+`amd-gpu-firmware 20260410-1.fc44.p1` installed 2026-05-10 via rpm-ostree local override.
+`gc_12_0_0_uni_mes.bin` updated to 727,680 bytes (upstream commit `bb95ff5c`, 2026-05-06).
+**Status: 30 min FurMark à charge maximale sans crash — null ptr à 0x705c/0x72c4 corrigé.**
+En attente de confirmation sur session gaming prolongée et packaging Fedora officiel.
+
+### Workarounds tested (all ineffective for Type C)
+
+- `amdgpu.uni_mes=0` — legacy MES crashes at 0xa2f within ~1 min. Worse than uni_mes.
+- `amdgpu.pg_mask=0` — prevents GPU init, system unbootable. Too aggressive.
 
 ---
 
-## 6. [INVESTIGATE] Correctable PCIe errors on OCuLink chain
+## 6. [NOTE] Patch chirurgical d'un initramfs sur Bazzite immutable
+
+Pour modifier un seul fichier dans l'initramfs sans rebuild dracut complet (évite les modules manquants) :
+
+```bash
+# 1. Extraire
+lsinitrd --unpack --directory /tmp/initrd-extract /boot/initramfs-backup.img
+
+# 2. Modifier le fichier voulu (ex: firmware)
+cp nouveau_firmware.bin.xz /tmp/initrd-extract/usr/lib/firmware/amdgpu/gc_12_0_0_uni_mes.bin.xz
+
+# 3. Détecter le format de compression de l'original
+file /boot/initramfs-backup.img  # zstd ou xz
+
+# 4. Recompresser (zstd = format Bazzite)
+cd /tmp/initrd-extract
+find . | cpio --create --format=newc | zstd > /boot/ostree/.../initramfs-new.img
+```
+
+Avantage : on part de l'image fonctionnelle connue → zéro risque de module manquant.
+
+---
+
+## 7. [INVESTIGATE] Correctable PCIe errors on OCuLink chain
 
 `DevSta: CorrErr+` on 00:03.1 (root port) and 64:00.0 (PCIe switch).
 `DevSta: UnsupReq+` on 64:00.0.

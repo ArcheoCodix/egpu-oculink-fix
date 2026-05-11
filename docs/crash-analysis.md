@@ -157,6 +157,54 @@ After enabling this, kwin_wayland no longer appears as the crash offender.
 
 ---
 
+### Type A2 — DCN pageflip timeout after sustained gaming (2026-05-10)
+
+**Observed in:** boot 2026-05-10 21:33 (firmware p1, `KWIN_DRM_NO_DIRECT_SCANOUT=1` active)
+
+#### Signature
+
+```
+kwin_wayland[4094]: Pageflip timed out! This is a bug in the amdgpu kernel driver
+kwin_wayland[4094]: Please report this at https://gitlab.freedesktop.org/drm/amd/-/issues
+  (repeated 1×/sec for ~15 seconds)
+amdgpu 0000:66:00.0: [drm] *ERROR* [CRTC:416:crtc-0] flip_done timed out
+```
+
+- **Trigger:** Enshrouded via Proton, several minutes of gaming + repeated alt-tabs
+- **Result:** External screens frozen; internal GPD screen (iGPU) unaffected; system fully
+  responsive; no GPU reset, no MES crash, no ring timeout
+- **Recovery:** kwin_wayland restart (`kwin_wayland --replace`) should recover displays
+  without reboot
+
+#### Differences from Type A
+
+| | Type A | Type A2 |
+|---|---|---|
+| Follows MES crash | Yes (60s after MES halts) | No |
+| GFX ring timeout | Yes | No |
+| GPU reset | Yes | No |
+| System responsive | No (freeze/lockup) | Yes |
+| `KWIN_DRM_NO_DIRECT_SCANOUT=1` | Stops it | Does not stop it |
+
+#### Analysis
+
+`KWIN_DRM_NO_DIRECT_SCANOUT=1` prevents kwin from bypassing the compositor for DMA-buf
+scanout, but kwin still submits page flips (`DRM_IOCTL_MODE_PAGE_FLIP`) to the KMS layer
+for vsync. The DCN display engine stops delivering vblank interrupts — the flip submitted
+by kwin never gets the `flip_done` signal from hardware.
+
+The trigger pattern (alt-tab during gaming) is consistent with a power state transition
+race: when alt-tabbing, GPU load drops sharply and GFXOFF or a display power gate may
+engage while a flip is in flight. `amdgpu.runpm=0` disables PCI runtime PM but does not
+necessarily prevent all DCN/display power gating.
+
+#### Where to file
+
+- freedesktop drm/amd: add as a separate comment on #5274, or open a dedicated issue
+- Keywords: RDNA4 Navi48 OCuLink pageflip flip_done timeout DCN vblank interrupt
+
+---
+
 ### Type B — eGPU lost from PCIe bus (crash 5)
 
 **Observed in:** crash 20260506-232111
@@ -216,10 +264,19 @@ devices in the OCuLink PCIe chain. This prevents any of them from entering D3col
 
 ---
 
-### Type C — MES firmware null pointer dereference (crashes 6–8)
+### Type C — MES firmware null pointer dereference (crashes 6–8, and crash 9)
 
 **Observed in:** crashes 20260507-001329 (Enshrouded), 20260507-221258 (PEAK.exe),
 20260508-014526 (kwin_wayland, GPU at full load)
+
+**Crash 9 (20260510-152602) — legacy MES variant:** kernel `6.19.14-ogc2.1.fc44`,
+`amdgpu.uni_mes=0` active. Legacy `mes`/`mes1` firmware loaded instead of `uni_mes`.
+The legacy MES also crashed, at a different offset (`regCP_MES_INSTR_PNTR = 0x00000a2f`),
+with `MES feature version: 1, fw version: 0x00000055` and
+`MES_KIQ feature version: 9, fw version: 0x000000b2`. The crash occurred within ~1 minute
+of desktop load — much faster than uni_mes crashes. Recovery outcome: not observed
+(system abandoned). **Conclusion: `amdgpu.uni_mes=0` swaps one broken firmware for
+another; the legacy MES is even less stable on this hardware.**
 
 #### Signature
 
@@ -311,9 +368,11 @@ direct cause; may contribute to CPU scheduling pressure that influences MES timi
 
 | Workaround | Mechanism | Target crash | Persistence |
 |------------|-----------|--------------|-------------|
-| `KWIN_DRM_NO_DIRECT_SCANOUT=1` | Avoids direct scanout flip path in kwin | Type A | `~/.config/plasma-workspace/env/kwin.sh` |
+| `KWIN_DRM_NO_DIRECT_SCANOUT=1` | Avoids direct scanout flip path in kwin | Type A | `/etc/environment` |
 | `amdgpu.runpm=0` | Disables amdgpu runtime PM (prevents broken DC resume) | Type A (partial) | rpm-ostree kargs |
 | `d3cold_allowed=0` on OCuLink chain | Prevents D3cold entry on OCuLink devices | Type B | `/etc/udev/rules.d/99-egpu-no-d3cold.rules` |
+| `amd-gpu-firmware p1` (727,680 bytes) | Fixes MES null ptr dereference at 0x705c/0x72c4 | Type C | rpm-ostree local override |
+| **Type A2 — no effective workaround found yet** | DCN pageflip timeout after gaming + alt-tab | Type A2 | — |
 
 ### Workarounds tested but found ineffective or invalid
 
@@ -321,9 +380,10 @@ direct cause; may contribute to CPU scheduling pressure that influences MES timi
 |-----------|---------|
 | `split_lock_detect=off` | Kernel treats it as userspace param (not a kernel boot param in 6.19.x). Steam bus_lock traps were noise, not the crash cause. |
 | `amdgpu.gfxoff=0` | `amdgpu: unknown parameter 'gfxoff' ignored` — does not exist in this kernel version. |
-| `amdgpu.pg_mask=0` | Valid parameter but caused GPU initialization failure → unbootable system. Too aggressive. |
+| `amdgpu.pg_mask=0` | Valid parameter but caused GPU initialization failure → unbootable system. Too aggressive (disables all power gating, some of which is required at init). |
 | `pcie_aspm=off` | ASPM already disabled on all OCuLink chain links — no effect. Removed. |
 | f377ea0561c9 patch | Already present in kernel 6.19.14-ogc1.1. Initial diagnosis was incorrect. |
+| `amdgpu.uni_mes=0` | Switches to legacy mes/mes1 firmware. Legacy MES also crashes (offset 0xa2f instead of 0x705c) and faster (~1 min vs 30+ min). Makes things worse. |
 
 ### Notes on Type C
 
@@ -331,6 +391,22 @@ The root cause (MES firmware null dereference at 0x705c) requires a firmware fix
 AMD. No kernel parameter workaround can prevent the MES crash itself. The recovery
 reliability (MODE1 succeeding vs CPU lockup) depends on timing in the reset code and
 is not controllable via parameters.
+
+**Firmware update status (2026-05-10) — fix confirmed:**
+
+| Firmware | Version | Offset crash | Résultat |
+|----------|---------|-------------|---------|
+| ogc1 `gc_12_0_0_uni_mes.bin` | `0x89` | `0x705c` | Crash après 30+ min ✗ |
+| ogc2 base `gc_12_0_0_uni_mes.bin` | `0x8b` | `0x72c4` | Crash au gaming ✗ |
+| ogc2 legacy `mes.bin` (`uni_mes=0`) | `0x55` | `0x00a2f` | Crash en ~1 min ✗ |
+| `amd-gpu-firmware 20260410-1.fc44.p1` | `0x00` (727,680 bytes) | — | **30 min FurMark sans crash ✓** |
+
+`amd-gpu-firmware 20260410-1.fc44.p1` (linux-firmware upstream commit `bb95ff5c`,
+2026-05-06) contient un `gc_12_0_0_uni_mes.bin` de 727,680 bytes dont le champ
+ucode_version est `0x00000000` (nouvelle base de versioning). Après 30 minutes de
+FurMark à charge GPU maximale — conditions qui déclenchaient systématiquement le crash
+en moins de 30 min sur les versions précédentes — **aucun crash observé**.
+Le null ptr dereference à l'offset 0x705c/0x72c4 semble corrigé dans ce firmware.
 
 ---
 
@@ -341,11 +417,12 @@ is not controllable via parameters.
    also stalls in some crashes. Is this a GFXOFF wakeup race specific to RDNA4, or
    a DC/DCN interrupt delivery issue on non-native PCIe (OCuLink)?
 
-2. **Why does `KWIN_DRM_NO_DIRECT_SCANOUT=1` fix Type A crashes?**
-   With direct scanout disabled, kwin composites through an intermediate buffer and
-   submits a blit instead of a hardware flip. This avoids the DCN pageflip path.
-   If the fix is in the flip path, the bug may be in `amdgpu_dm_crtc_vblank_control_worker`
-   or the DCN flip interrupt handling on RDNA4.
+2. **Why does `KWIN_DRM_NO_DIRECT_SCANOUT=1` fix Type A but not Type A2?**
+   Both involve flip_done timeouts, but Type A leads to a full GFX ring hang while
+   Type A2 only freezes the display, leaving the system responsive. `NO_DIRECT_SCANOUT`
+   avoids the DMA-buf bypass path but still uses `DRM_IOCTL_MODE_PAGE_FLIP`. Type A2
+   suggests the vblank interrupt failure can happen independently of direct scanout.
+   The trigger (alt-tab under gaming load) points to a DCN power state transition race.
 
 3. **Are the persistent PCIe errors (`CorrErr+`, `UnsupReq+`) on 64:00.0 contributing?**
    These errors predate our testing and may be an artifact of previous crashes or

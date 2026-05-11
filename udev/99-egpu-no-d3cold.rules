@@ -2,6 +2,10 @@
 # D3cold causes the PCIe link to drop and the eGPU to disappear from the bus.
 # OCuLink does not support Surprise removal, so D3cold entry is unsafe.
 # See docs/upstream-todo.md for the proper kernel fix.
+# 00:03.1 = AMD Strix Halo GPP Bridge (root port, parent of the OCuLink chain).
+# If the root port enters D3cold it cuts the entire downstream chain regardless
+# of the d3cold_allowed settings on child devices.
+ACTION=="add", SUBSYSTEM=="pci", KERNELS=="0000:00:03.1", ATTR{d3cold_allowed}="0"
 ACTION=="add", SUBSYSTEM=="pci", KERNELS=="0000:64:00.0", ATTR{d3cold_allowed}="0"
 ACTION=="add", SUBSYSTEM=="pci", KERNELS=="0000:65:00.0", ATTR{d3cold_allowed}="0"
 ACTION=="add", SUBSYSTEM=="pci", KERNELS=="0000:66:00.0", ATTR{d3cold_allowed}="0"
