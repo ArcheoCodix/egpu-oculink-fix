@@ -188,12 +188,14 @@ amdgpu: MES(1) failed to respond to msg=REMOVE_QUEUE  (×5–6)
 - freedesktop drm/amd: **Filed — https://gitlab.freedesktop.org/drm/amd/-/issues/5274**
 - Attached: coredump.bin from crash-20260507-221258 + journal sections from crashes 1 and 2
 
-### Firmware update — fix confirmed
+### Firmware update — fix NOT confirmed
 
 `amd-gpu-firmware 20260410-1.fc44.p1` installed 2026-05-10 via rpm-ostree local override.
 `gc_12_0_0_uni_mes.bin` updated to 727,680 bytes (upstream commit `bb95ff5c`, 2026-05-06).
-**Status: 30 min FurMark à charge maximale sans crash — null ptr à 0x705c/0x72c4 corrigé.**
-En attente de confirmation sur session gaming prolongée et packaging Fedora officiel.
+**Status: le fix ne fonctionne pas sur ce hardware.**
+Le firmware p1 rapporte `fw version: 0x89` en interne et crashe à l'offset `0x705c` —
+identique aux crashs ogc1. Le test FurMark 30 min était insuffisant ; Enshrouded déclenche
+le crash en moins de 30 min. Signalé sur freedesktop#5274.
 
 ### Workarounds tested (all ineffective for Type C)
 

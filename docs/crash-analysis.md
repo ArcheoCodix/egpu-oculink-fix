@@ -394,19 +394,20 @@ is not controllable via parameters.
 
 **Firmware update status (2026-05-10) — fix confirmed:**
 
-| Firmware | Version | Offset crash | Résultat |
-|----------|---------|-------------|---------|
+| Firmware | Version interne | Offset crash | Résultat |
+|----------|----------------|-------------|---------|
 | ogc1 `gc_12_0_0_uni_mes.bin` | `0x89` | `0x705c` | Crash après 30+ min ✗ |
 | ogc2 base `gc_12_0_0_uni_mes.bin` | `0x8b` | `0x72c4` | Crash au gaming ✗ |
 | ogc2 legacy `mes.bin` (`uni_mes=0`) | `0x55` | `0x00a2f` | Crash en ~1 min ✗ |
-| `amd-gpu-firmware 20260410-1.fc44.p1` | `0x00` (727,680 bytes) | — | **30 min FurMark sans crash ✓** |
+| `amd-gpu-firmware 20260410-1.fc44.p1` (727,680 bytes) | `0x89`¹ | `0x705c` | **Crash gaming confirmé ✗** |
 
-`amd-gpu-firmware 20260410-1.fc44.p1` (linux-firmware upstream commit `bb95ff5c`,
-2026-05-06) contient un `gc_12_0_0_uni_mes.bin` de 727,680 bytes dont le champ
-ucode_version est `0x00000000` (nouvelle base de versioning). Après 30 minutes de
-FurMark à charge GPU maximale — conditions qui déclenchaient systématiquement le crash
-en moins de 30 min sur les versions précédentes — **aucun crash observé**.
-Le null ptr dereference à l'offset 0x705c/0x72c4 semble corrigé dans ce firmware.
+¹ Le firmware p1 rapporte `fw version: 0x89` en interne (via debugfs et coredump) malgré
+`ucode_version = 0x00` dans le header kernel. Il crashe au même offset `0x705c` que l'ogc1.
+
+**Conclusion : le firmware p1 (linux-firmware commit `bb95ff5c`, 2026-05-06) ne corrige pas
+le null ptr dereference sur cette combinaison hardware/kernel.** Le test FurMark 30 min
+(2026-05-10) n'avait pas reproduit le crash, mais Enshrouded via Proton le déclenche en
+moins de 30 minutes. Le fix firmware upstream reste à attendre.
 
 ---
 

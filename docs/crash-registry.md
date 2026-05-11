@@ -86,11 +86,19 @@ compute VKD3D. `KWIN_DRM_NO_DIRECT_SCANOUT=1` ne couvre pas ce chemin.
 | 8 | 2026-05-08 01:45 | ogc1 | v0x89 | NO_DIRECT_SCANOUT + D3cold rule + runpm=0 | MES null ptr (0x705c) | kwin_wayland¹ | gfx_0.0.0 (gap=2) | MODE1 | Récupéré |
 | 9 | 2026-05-10 15:26 | ogc2 | legacy v0x55² | NO_DIRECT_SCANOUT + D3cold rule + runpm=0 | Legacy MES crash (0xa2f) | kwin_wayland | gfx_0.0.0 (gap=2) | — | Test avorté |
 | 10 | 2026-05-10 17:43 | ogc2 | p1 v0x00 | NO_DIRECT_SCANOUT + D3cold rule + runpm=0 | PCIe bus loss + DCN no-recovery | enshrouded.exe | gfx_0.0.0 (gap=2) | Ring reset + flip_done timeout | Écrans gelés, système OK |
-| 11 | 2026-05-10 19:17 | ogc2 | p1 v0x00 | NO_DIRECT_SCANOUT + D3cold rule + runpm=0 | Compute ring hang (idle) | vkd3d_queue | comp_1.0.1 (gap=1) | Ring reset | Récupéré |
+| 11 | 2026-05-10 19:17 | ogc2 | p1 v0x89² | NO_DIRECT_SCANOUT + D3cold rule + runpm=0 | Compute ring hang (idle) | vkd3d_queue (AoE4) | comp_1.0.1 (gap=1) | Ring reset | Récupéré |
+| 12 | 2026-05-11 22:42 | ogc2 | v0x8b³ | NO_DIRECT_SCANOUT + D3cold rule (00:03.1 inclus) + runpm=0 | MES null ptr (0x72c4, v0x8b) | kwin_wayland | gfx_0.0.0 (gap=2) | Ring reset failed → MODE1 | Écrans gelés (flip_done timeout) |
+| 13 | 2026-05-11 22:44 | ogc2 | v0x8b³ | idem | MES mort (suite crash 12) | kwin_wayland | gfx_0.0.0 (gap=2) | MODE1 → 5× REMOVE_QUEUE sans réponse | Reboot forcé |
+| 14 | 2026-05-11 23:13 | ogc2 | p1 v0x89² | NO_DIRECT_SCANOUT + D3cold rule (00:03.1 inclus) + runpm=0 | MES null ptr (**0x705c**, v0x89) | enshrouded.exe | gfx_0.0.0 (gap=2) | Ring reset (×2) | Reboot |
 
 ¹ kwin_wayland loggé comme offender car dernier soumetteur — GPU était à 100% charge de jeu au
 moment du crash MES. Le jeu était la vraie charge, kwin n'est pas la cause.  
-² Crash 9 est un test volontaire de `amdgpu.uni_mes=0`. Le firmware legacy MES v0x55 crashe à
+² Le firmware p1 (`amd-gpu-firmware 20260410-1.fc44.p1`, 727 680 bytes, linux-firmware bb95ff5c)
+rapporte `fw version: 0x00000089` en interne malgré `ucode_version = 0x00` dans le header kernel.
+Il crashe à 0x705c — **le même offset que l'ogc1**. Le p1 ne corrige pas le bug sur ce hardware.  
+³ Crash 12/13 : boot sur le déploiement OCI 44.20260511 — le firmware chargé était v0x8b (ogc2
+base) malgré l'override p1 listé. Incohérence de déploiement entre les deux layers rpm-ostree.  
+⁴ Crash 9 est un test volontaire de `amdgpu.uni_mes=0`. Le firmware legacy MES v0x55 crashe à
 l'offset 0xa2f en moins d'une minute. Testé et supprimé immédiatement.
 
 ---
@@ -100,9 +108,9 @@ l'offset 0xa2f en moins d'une minute. Testé et supprimé immédiatement.
 | Workaround | Fichier | Cible | Status |
 |------------|---------|-------|--------|
 | `KWIN_DRM_NO_DIRECT_SCANOUT=1` | `/etc/environment` | GFX ring hang (cause 1) | Actif — couvre kwin, pas VKD3D compute |
-| `d3cold_allowed=0` | `/etc/udev/rules.d/99-egpu-no-d3cold.rules` | PCIe bus loss (cause 2) | Actif — ne couvre pas 00:03.1 |
+| `d3cold_allowed=0` | `/etc/udev/rules.d/99-egpu-no-d3cold.rules` | PCIe bus loss (cause 2) | Actif — couvre toute la chaîne dont `00:03.1` |
 | `amdgpu.runpm=0` | rpm-ostree kargs | DC resume CRTC cassé | Actif |
-| `amd-gpu-firmware p1` | rpm-ostree local override | MES null ptr (cause 3) | Actif — fix firmware installé |
+| `amd-gpu-firmware p1` | rpm-ostree local override | MES null ptr (cause 3) | Actif — **ne corrige pas le bug** (crash 14 : v0x89 → 0x705c) |
 
 ---
 
@@ -124,6 +132,9 @@ Chaque dossier contient : `coredump.bin`, `journal-kernel.txt`, `fence_info.txt`
 | `crash-20260510-152602` | 9 | Legacy MES crash (0xa2f, v0x55) — test uni_mes=0 | `coredump.bin`, `journal-kernel.txt` |
 | `crash-20260510-174347` | 10 | PCIe bus loss + DCN no-recovery (p1 fw) | `journal-kernel.txt` (device lost + flip_done timeout), `pm_info.txt` (SCLK=63 MHz) |
 | `crash-20260510-191734` | 11 | Compute ring hang (idle / vkd3d) | `pm_info.txt` (SCLK=4 MHz, Load=0%), `journal-kernel.txt` |
+| `crash-20260511-224207` | 12 | MES null ptr (0x72c4, v0x8b) + DCN no-recovery | `coredump.bin` (INSTR_PNTR=0x72c4, fw=0x8b), `journal-kernel.txt` |
+| `crash-20260511-224409` | 13 | MES mort (suite crash 12), REMOVE_QUEUE loop | `journal-kernel.txt` (5× MES failed) |
+| `crash-20260511-231307` | 14 | MES null ptr (**0x705c**, **v0x89** p1 firmware) | `coredump.bin` (INSTR_PNTR=0x705c, fw=0x89 — **p1 non corrigé**) |
 
 **Note :** les coredumps des crashs 6, 7, 8 contiennent les registres MES
 (`regCP_MES_INSTR_PNTR = 0x705c`) et le page fault GFXHUB. Le coredump du crash 7 a été
@@ -148,6 +159,12 @@ joint au bug report freedesktop#5274.
    kwin flip mais pas le chemin compute VKD3D. Workaround potentiel : forcer le GPU hors GFXOFF
    pendant les sessions gaming (non confirmé).
 
-4. **Fix MES firmware p1 : confirmation nécessaire sur session gaming longue.**  
-   FurMark 30 min OK. Crash 10 et 11 n'ont pas déclenché de MES crash. Mais aucune session
-   gaming de 30+ min sans autre problème n'a encore été observée.
+4. **Le firmware p1 ne corrige pas le bug MES.**  
+   Crash 14 confirme : `fw version: 0x89`, `INSTR_PNTR = 0x705c` — même signature que les crashs
+   ogc1 originaux. Le FurMark 30 min ne reproduit pas le crash aussi vite que les jeux (Enshrouded
+   déclenche le bug en moins de 30 min). Le fix upstream n'est pas encore disponible.
+
+5. **Incohérence de version firmware entre les boots (v0x8b vs v0x89).**  
+   Les crashs 12/13 (OCI 44.20260511) ont chargé v0x8b malgré l'override p1. Le crash 14 (boot
+   suivant) a chargé v0x89 (p1). Origine probable : switch de déploiement ostree entre deux layers
+   ayant des bases différentes pour `amd-gpu-firmware`. À investiguer.
