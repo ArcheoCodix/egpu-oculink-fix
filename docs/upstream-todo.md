@@ -187,6 +187,8 @@ amdgpu: MES(1) failed to respond to msg=REMOVE_QUEUE  (×5–6)
 
 - freedesktop drm/amd: **Filed — https://gitlab.freedesktop.org/drm/amd/-/issues/5274**
 - Attached: coredump.bin from crash-20260507-221258 + journal sections from crashes 1 and 2
+- Update comment (2026-05-14): https://gitlab.freedesktop.org/drm/amd/-/issues/5274#note_3467811
+  (firmware bb95ff5c NOT fixing the crash; D3cold root port finding; DCN no-recovery; mes_dead suggestion)
 
 ### Firmware update — fix NOT confirmed
 

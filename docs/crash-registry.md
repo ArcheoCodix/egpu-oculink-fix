@@ -22,8 +22,9 @@ Reprise par ring reset (MODE1 non nécessaire).
 kwin_wayland soumet une commande de flip. La commande ne réveille pas le GPU → timeout 60s.
 
 **Workaround actif :** `KWIN_DRM_NO_DIRECT_SCANOUT=1` — redirige le chemin de présentation kwin
-via un buffer intermédiaire, évite le flip direct sur le GFX ring.  
-**Status : workaround en place, cause racine non corrigée upstream.**
+via un buffer intermédiaire, évite le flip direct sur le GFX ring. **Ne couvre pas** les
+soumissions DXVK ni VKD3D (crashs 11, 15, 16).  
+**Status : workaround partiel, cause racine non corrigée upstream.**
 
 ---
 
@@ -36,9 +37,10 @@ ne se réinitialise pas correctement après recovery.
 **Cause probable :** entrée en D3cold par le bridge parent (00:03.1, non couvert par notre règle
 udev) ou erreur de lien PCIe. OCuLink ne supporte pas la Surprise Removal.
 
-**Workaround actif :** `d3cold_allowed=0` via udev sur les devices `64:00.0`, `65:00.0`,
-`66:00.0`, `66:00.1`. La règle ne couvre pas le root port `00:03.1`.  
-**Status : partiel — crash 10 montre que le bus loss se produit encore malgré la règle.**
+**Workaround actif :** `d3cold_allowed=0` via udev sur les devices `00:03.1`, `64:00.0`,
+`65:00.0`, `66:00.0`, `66:00.1` (root port inclus depuis 2026-05-11).  
+**Status : RÉSOLU côté workaround** — aucun `device lost` sur les crashs 12–16 (5 crashs, 3 sessions gaming).
+Fix upstream attendu : PCI quirk `drivers/pci/quirks.c` (`PCI_DEV_FLAGS_NO_D3COLD`, non soumis).
 
 ---
 
@@ -51,10 +53,11 @@ provoquer un CPU hard lockup si la boucle REMOVE_QUEUE ne se termine pas.
 **Cause confirmée :** bug dans le firmware unifié MES (`gc_12_0_0_uni_mes.bin`). Le microcontrôleur
 MES déréférence un pointeur nul à un offset fixe lors d'une charge GPU soutenue.
 
-**Fix :** firmware `amd-gpu-firmware 20260410-1.fc44.p1` (linux-firmware commit `bb95ff5c`,
-2026-05-06, 727 680 bytes, version 0x00). 30 min FurMark sans crash observé.  
 **Bug report :** https://gitlab.freedesktop.org/drm/amd/-/issues/5274  
-**Status : fix firmware installé, en attente de confirmation sur session gaming prolongée.**
+**Commentaire de suivi (2026-05-14) :** https://gitlab.freedesktop.org/drm/amd/-/issues/5274#note_3467811  
+**p1 firmware (`bb95ff5c`, 727 680 bytes) : ne corrige PAS le bug.** Crash 14 confirmé :
+fw=0x89 interne, INSTR_PNTR=0x705c — signature identique aux crashs ogc1.  
+**Status : EN ATTENTE de firmware fix AMD. Aucun workaround efficace.**
 
 ---
 
@@ -72,7 +75,7 @@ compute VKD3D. `KWIN_DRM_NO_DIRECT_SCANOUT=1` ne couvre pas ce chemin.
 
 ## Registre des crashs
 
-11 crashs capturés par le service `amdgpu-coredump-poll`.
+16 crashs capturés par le service `amdgpu-coredump-poll`.
 
 | # | Timestamp | Kernel | MES fw | Workarounds actifs | Cause racine | Offender | Ring | Recovery | Outcome |
 |---|-----------|--------|--------|--------------------|--------------|----------|------|----------|---------|
@@ -90,6 +93,8 @@ compute VKD3D. `KWIN_DRM_NO_DIRECT_SCANOUT=1` ne couvre pas ce chemin.
 | 12 | 2026-05-11 22:42 | ogc2 | v0x8b³ | NO_DIRECT_SCANOUT + D3cold rule (00:03.1 inclus) + runpm=0 | MES null ptr (0x72c4, v0x8b) | kwin_wayland | gfx_0.0.0 (gap=2) | Ring reset failed → MODE1 | Écrans gelés (flip_done timeout) |
 | 13 | 2026-05-11 22:44 | ogc2 | v0x8b³ | idem | MES mort (suite crash 12) | kwin_wayland | gfx_0.0.0 (gap=2) | MODE1 → 5× REMOVE_QUEUE sans réponse | Reboot forcé |
 | 14 | 2026-05-11 23:13 | ogc2 | p1 v0x89² | NO_DIRECT_SCANOUT + D3cold rule (00:03.1 inclus) + runpm=0 | MES null ptr (**0x705c**, v0x89) | enshrouded.exe | gfx_0.0.0 (gap=2) | Ring reset (×2) | Reboot |
+| 15 | 2026-05-13 20:47 | ogc2 | p1 v0x89² | NO_DIRECT_SCANOUT + D3cold rule (00:03.1 inclus) + runpm=0 | GFX + SDMA ring hang (idle) | Oxygen Train.ex⁴ (dxvk-submit) | sdma1 (gap=1) + gfx_0.0.0 (gap=2) | Ring reset | Récupéré (sdma0 fallback timers continus) |
+| 16 | 2026-05-13 20:53 | ogc2 | p1 v0x89² | idem | SDMA ring hang (idle, suite crash 15) | Oxygen Train.ex (dxvk-submit) | sdma1 (gap=1) | Ring reset | Récupéré |
 
 ¹ kwin_wayland loggé comme offender car dernier soumetteur — GPU était à 100% charge de jeu au
 moment du crash MES. Le jeu était la vraie charge, kwin n'est pas la cause.  
@@ -99,7 +104,11 @@ Il crashe à 0x705c — **le même offset que l'ogc1**. Le p1 ne corrige pas le 
 ³ Crash 12/13 : boot sur le déploiement OCI 44.20260511 — le firmware chargé était v0x8b (ogc2
 base) malgré l'override p1 listé. Incohérence de déploiement entre les deux layers rpm-ostree.  
 ⁴ Crash 9 est un test volontaire de `amdgpu.uni_mes=0`. Le firmware legacy MES v0x55 crashe à
-l'offset 0xa2f en moins d'une minute. Testé et supprimé immédiatement.
+l'offset 0xa2f en moins d'une minute. Testé et supprimé immédiatement.  
+⁵ Crashs 15/16 : offender `Oxygen Train.ex` = jeu Windows via Proton/DXVK. GPU à 4 MHz SCLK /
+Load=1% au crash — même cause que crashs 1-4 (GPU en GFXOFF lors d'une soumission DXVK).
+`KWIN_DRM_NO_DIRECT_SCANOUT=1` ne couvre pas le chemin de soumission DXVK. Après crash 15,
+sdma0 continuait d'expirer ses fallback timers jusqu'au crash 16 (~5 min plus tard).
 
 ---
 
@@ -107,7 +116,7 @@ l'offset 0xa2f en moins d'une minute. Testé et supprimé immédiatement.
 
 | Workaround | Fichier | Cible | Status |
 |------------|---------|-------|--------|
-| `KWIN_DRM_NO_DIRECT_SCANOUT=1` | `/etc/environment` | GFX ring hang (cause 1) | Actif — couvre kwin, pas VKD3D compute |
+| `KWIN_DRM_NO_DIRECT_SCANOUT=1` | `/etc/environment` | GFX ring hang (cause 1) | Actif — couvre kwin uniquement ; ne couvre pas DXVK ni VKD3D (crashs 11, 15, 16) |
 | `d3cold_allowed=0` | `/etc/udev/rules.d/99-egpu-no-d3cold.rules` | PCIe bus loss (cause 2) | Actif — couvre toute la chaîne dont `00:03.1` |
 | `amdgpu.runpm=0` | rpm-ostree kargs | DC resume CRTC cassé | Actif |
 | `amd-gpu-firmware p1` | rpm-ostree local override | MES null ptr (cause 3) | Actif — **ne corrige pas le bug** (crash 14 : v0x89 → 0x705c) |
@@ -135,6 +144,8 @@ Chaque dossier contient : `coredump.bin`, `journal-kernel.txt`, `fence_info.txt`
 | `crash-20260511-224207` | 12 | MES null ptr (0x72c4, v0x8b) + DCN no-recovery | `coredump.bin` (INSTR_PNTR=0x72c4, fw=0x8b), `journal-kernel.txt` |
 | `crash-20260511-224409` | 13 | MES mort (suite crash 12), REMOVE_QUEUE loop | `journal-kernel.txt` (5× MES failed) |
 | `crash-20260511-231307` | 14 | MES null ptr (**0x705c**, **v0x89** p1 firmware) | `coredump.bin` (INSTR_PNTR=0x705c, fw=0x89 — **p1 non corrigé**) |
+| `crash-20260513-204759` | 15 | GFX + SDMA ring hang (idle / DXVK) | `pm_info.txt` (SCLK=4 MHz, Load=1%), `journal-kernel.txt` (sdma1+gfx timeout) |
+| `crash-20260513-205338` | 16 | SDMA ring hang (idle / DXVK, suite crash 15) | `journal-kernel.txt` (sdma1 timeout — sdma0 fallback timers en continu) |
 
 **Note :** les coredumps des crashs 6, 7, 8 contiennent les registres MES
 (`regCP_MES_INSTR_PNTR = 0x705c`) et le page fault GFXHUB. Le coredump du crash 7 a été
