@@ -81,10 +81,40 @@ This leaves the display pipeline in a broken state. The GPU ring then times out
 
 ---
 
-## 3. [KWIN] Direct scanout flip hang on RDNA4 + non-native PCIe (OCuLink)
+## 3. [AMDGPU] GPU idle wake failure (GFXOFF) — GFX, SDMA, compute rings
 
-**Status:** Not submitted  
-**Priority:** Medium — causes ring gfx_0.0.0 timeout via kwin_wayland  
+**Status:** Submitted — https://gitlab.freedesktop.org/drm/amd/-/work_items/5294  
+**Priority:** High — root cause of 8/16 crashes (kwin, DXVK, VKD3D paths)  
+**Workaround:** `KWIN_DRM_NO_DIRECT_SCANOUT=1` (partial — kwin only; DXVK/VKD3D still exposed)
+
+### Problem
+
+When the GPU is in deep idle (SCLK 4–60 MHz, GPU Load 0–1%), ring submissions from
+kwin_wayland (GFX flip), DXVK (SDMA + GFX), or VKD3D (compute) time out after 60s.
+The GPU does not wake from GFXOFF before the ring watchdog fires.
+
+Three submission paths affected:
+
+| Path | Ring | Gap | SCLK at crash |
+|------|------|-----|---------------|
+| kwin_wayland direct scanout | gfx_0.0.0 | 2 | 14–60 MHz |
+| VKD3D compute (D3D12 via Proton) | comp_1.0.1 | 1 | 4 MHz |
+| DXVK (D3D11 via Proton) | sdma1 + gfx_0.0.0 | 1 + 2 | 4 MHz |
+
+Recovery via ring reset succeeds consistently. No GFXHUB page fault, no MES involvement.
+Separate from #5274 (MES null ptr — different failure mode, different recovery path).
+
+### Where filed
+
+- freedesktop drm/amd: **Filed — https://gitlab.freedesktop.org/drm/amd/-/work_items/5294**
+- Attachments: 3× pm_info at crash time + full journal (DXVK crash, 2026-05-13)
+
+---
+
+## 3b. [KWIN] Direct scanout flip hang on RDNA4 + non-native PCIe (OCuLink)
+
+**Status:** Covered by #5294 (amdgpu side) — kwin-specific filing not done  
+**Priority:** Medium — kwin flip path is one of the 3 paths in #5294  
 **Workaround:** `KWIN_DRM_NO_DIRECT_SCANOUT=1`
 
 ### Problem

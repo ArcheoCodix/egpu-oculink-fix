@@ -173,6 +173,6 @@ Secondaire — conséquence des causes B et C, pas une cause primaire indépenda
 |-------|------|--------|-----------|
 | MES v12 null ptr dereference | freedesktop drm/amd | Déposée | [#5274](https://gitlab.freedesktop.org/drm/amd/-/issues/5274) |
 | Update firmware bb95ff5c inefficace + D3cold + DCN | freedesktop drm/amd | Commentaire posté | [note_3467811](https://gitlab.freedesktop.org/drm/amd/-/issues/5274#note_3467811) |
-| GPU idle wake failure (GFXOFF) | freedesktop drm/amd | **À déposer** | — |
+| GPU idle wake failure (GFXOFF) | freedesktop drm/amd | **Déposée** | [#5294](https://gitlab.freedesktop.org/drm/amd/-/work_items/5294) |
 | PCI quirk D3cold OCuLink | linux-pci@vger | **À soumettre** | — |
 | runtime PM resume CRTC | freedesktop drm/amd | À déposer | — |
