@@ -2,7 +2,7 @@
 
 Hardware: GPD Win 4 (Ryzen AI 9 HX 370 / Strix Halo) + Minisforum DEG1 OCuLink dock + Sapphire Nitro+ RX 9070 XT (Navi 48 / RDNA4). Bazzite 44.
 
-Full picture in `docs/topo.md`. This file is the agent quick-start.
+Full picture in `docs/topo.md`. Next planned tests in `docs/next-actions.md`. This file is the agent quick-start.
 
 ## PCIe chain
 
@@ -74,7 +74,9 @@ Draft reports in `~/freedesktop-bug-report/`:
 ~/egpu-oculink-fix/                — this repo
   docs/topo.md                     — executive summary, source of truth
   docs/crash-registry.md           — per-crash log (17 entries)
+  docs/crash-analysis.md           — detailed analysis & rejected workarounds
   docs/upstream-todo.md            — upstream items to file/track
+  docs/next-actions.md             — pending tests (native game, fw bisection)
   docs/gitlab-api.md               — how to query freedesktop GitLab
   scripts/sclk-monitor.sh          — SCLK/Load logger (./sclk-monitor.sh card1 2)
   udev/99-egpu-no-d3cold.rules     — D3cold workaround rule
