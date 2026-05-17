@@ -81,6 +81,82 @@ Bisection log₂(8) ≈ 3 versions à tester en pratique pour cerner la régress
 
 ---
 
+## 3. Audit kernel : wake-signal path Navi 48 (Cause A)
+
+**But :** identifier pourquoi certains rings (kwin flip `gfx_0.0.0`, DXVK `sdma1`,
+VKD3D `comp_1.0.1`) ne réveillent pas le GPU avant d'attendre la complétion du
+job, alors qu'une charge continue le maintient éveillé sans souci.
+
+**Hypothèse :** un appel de wake (vers PMFW ou message SMU type
+`WakeFromGfxoff`/`SetSoftMinByFreq`) présent dans certains chemins de soumission
+est manquant pour SDMA et compute sur RDNA4 (gfx_v12/sdma_v7/mes_v12). Si vrai,
+Cause A est un bug driver (omission RDNA4) et non un bug firmware — c'est-à-dire
+fixable côté kernel, contrairement à ce qu'on a écrit jusqu'ici.
+
+**Protocole (analyse code, pas test runtime) :**
+1. Cloner les sources du kernel actif (`linux-6.19.14`, branche ogc5)
+2. Dans `drivers/gpu/drm/amd/amdgpu/` : grep `amdgpu_ring_commit`,
+   `amdgpu_job_run`, `amdgpu_fence_emit`, chercher tout appel à
+   `amdgpu_dpm_*` / `amdgpu_device_ip_set_powergating_state` / messages SMU
+   avant submission
+3. Comparer le path GFX (semble OK sous charge continue) vs SDMA/compute paths
+4. Comparer Navi 48 (gfx_v12, sdma_v7) vs Navi 21/31 (gfx_v10/v11) où Cause A
+   n'est pas rapportée. Diff entre les init ring callbacks est la cible
+
+**Output attendu :** un patch testable (ajouter le wake-call manquant dans le
+path SDMA/compute) ou la confirmation que le wake est entièrement délégué à PMFW
+côté firmware — auquel cas on recadre #5294 avec cette donnée.
+
+**Décision après analyse :**
+- Wake-call manquant identifié → build kernel custom + patch, valider en
+  reproduisant Cause A (déjà difficile, voir crash-registry), soumettre upstream
+- Aucun wake explicite quelque part dans amdgpu → preuve que c'est purement
+  firmware, mettre à jour #5294 avec l'analyse pour orienter AMD
+
+---
+
+## 4. Test SMU SetHardMinByFreq sur GFXCLK (Cause A)
+
+**But :** vérifier si le message SMU `SetHardMinByFreq(PPCLK_GFXCLK, N)` est
+honoré par PMFW, là où `DisableSmuFeatures(DS_GFXCLK)` et `force_performance_level=high`
+sont ignorés. C'est un plancher dur côté firmware, mécaniquement distinct des
+masques de features.
+
+**Hypothèse :** PMFW pourrait respecter un HardMin alors qu'elle ignore les
+masques. Si oui, plancher à 500 MHz (DPM state 0) empêche l'entrée DS_GFXCLK et
+masque Cause A jusqu'au fix firmware réel.
+
+**À distinguer du patch déjà rejeté :** le patch `PP_SCLK_DEEP_SLEEP_MASK` rejeté
+plus bas porte sur le message `DisableSmuFeatures` à l'init. `SetHardMinByFreq`
+est un message SMU différent — même si la PMFW ignore le premier, elle peut
+respecter le second (utilisé par AMD pour pin display clock par exemple).
+
+**Vérification préalable (code) :**
+1. Grep `SetHardMinByFreq` / `set_hard_min_freq` dans
+   `drivers/gpu/drm/amd/pm/swsmu/smu14/smu_v14_0_2_ppt.c`
+2. Vérifier que `PPCLK_GFXCLK` est dans la table des clocks autorisés pour ce
+   message sur smu_v14_0_2
+
+**Protocole de test :**
+1. Si exposé via debugfs : `echo` la valeur directement, mesurer SCLK live
+2. Sinon : patch driver appelant `smu_set_hard_min_freq(SMU_GFXCLK, 500)` à
+   l'init, rebuild kernel
+3. `sclk-monitor.sh card1 2` : SCLK doit rester ≥ 500 MHz idle compris
+4. Si plancher tenu : usage normal 2–3 h, vérifier absence ring timeout Cause A
+
+**Risque connu :** plancher 500 MHz idle = ~+5–10 W consommation continue. Pas
+un problème en eGPU desktop ; à noter si on porte la solution à un setup mobile.
+
+**Décision après test :**
+- HardMin tenu et Cause A absent → workaround driver-side viable, patch soumis
+  upstream + commentaire #5294
+- HardMin tenu mais Cause A persiste → bug n'est pas dans la profondeur d'idle
+  mais bien dans la séquence wake (renvoi vers action 3)
+- HardMin ignoré comme les masques → confirmation que tout pilotage SCLK passe
+  par PMFW autonome, escalade #5294 avec cette preuve
+
+---
+
 ## Pas dans cette liste — raisons
 
 - ~~`pcie_aspm=off`~~ : ASPM déjà désactivé hardware-side sur toute la chaîne
