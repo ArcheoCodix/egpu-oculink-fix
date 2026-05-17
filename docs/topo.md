@@ -2,8 +2,8 @@
 
 **Hardware:** GPD Win 4 (Ryzen AI 9 HX 370 / Strix Halo) + Minisforum DEG1 (OCuLink) + Sapphire RX 9070 XT (Navi 48 / RDNA4)  
 **Connection:** PCIe 4.0 x4 via OCuLink  
-**OS:** Bazzite 44, kernel 6.19.14-ogc{1,2}.1.fc44  
-**Period:** 2026-05-05 → 2026-05-13 | **Crashes captured:** 16
+**OS:** Bazzite 44, kernel 6.19.14-ogc5.1.fc44  
+**Period:** 2026-05-05 → 2026-05-17 | **Crashes captured:** 17+
 
 ---
 
@@ -163,7 +163,7 @@ Secondaire — conséquence des causes B et C, pas une cause primaire indépenda
 | `KWIN_DRM_NO_DIRECT_SCANOUT=1` | `/etc/environment` | Cause A (kwin) | Actif — partiel |
 | `d3cold_allowed=0` (5 devices) | `/etc/udev/rules.d/99-egpu-no-d3cold.rules` | Cause B | Actif — résolu |
 | `amdgpu.runpm=0` | rpm-ostree kargs | Cause D (DC resume) | Actif |
-| `amd-gpu-firmware p1` | rpm-ostree local override | Cause C | Actif — **inefficace** |
+| ~~`amd-gpu-firmware p1`~~ | rpm-ostree local override | Cause C | **Retiré** — inefficace |
 
 ---
 
@@ -174,5 +174,5 @@ Secondaire — conséquence des causes B et C, pas une cause primaire indépenda
 | MES v12 null ptr dereference | freedesktop drm/amd | Déposée | [#5274](https://gitlab.freedesktop.org/drm/amd/-/issues/5274) |
 | Update firmware bb95ff5c inefficace + D3cold + DCN | freedesktop drm/amd | Commentaire posté | [note_3467811](https://gitlab.freedesktop.org/drm/amd/-/issues/5274#note_3467811) |
 | GPU idle wake failure (GFXOFF) | freedesktop drm/amd | **Déposée** | [#5294](https://gitlab.freedesktop.org/drm/amd/-/work_items/5294) |
-| PCI quirk D3cold OCuLink | linux-pci@vger | **À soumettre** | — |
+| PCI quirk D3cold OCuLink | bugzilla.kernel.org | **Déposée** | [#221540](https://bugzilla.kernel.org/show_bug.cgi?id=221540) |
 | runtime PM resume CRTC | freedesktop drm/amd | À déposer | — |

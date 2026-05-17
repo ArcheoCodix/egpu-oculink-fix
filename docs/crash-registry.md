@@ -2,7 +2,7 @@
 
 **Hardware:** GPD Win 4 (Ryzen AI 9 HX 370 / Strix Halo) + Minisforum DEG1 (OCuLink) + Sapphire RX 9070 XT (Navi 48 / RDNA4)  
 **Connexion:** PCIe 4.0 x4 via OCuLink  
-**OS:** Bazzite 44, kernel 6.19.14-ogc{1,2}.1.fc44  
+**OS:** Bazzite 44, kernel 6.19.14-ogc5.1.fc44 (ogc1/ogc2 pour crashs antérieurs)  
 **Captures:** `/var/log/amdgpu-coredumps/crash-*/` (service `amdgpu-coredump-poll`)
 
 ---
@@ -40,7 +40,7 @@ udev) ou erreur de lien PCIe. OCuLink ne supporte pas la Surprise Removal.
 **Workaround actif :** `d3cold_allowed=0` via udev sur les devices `00:03.1`, `64:00.0`,
 `65:00.0`, `66:00.0`, `66:00.1` (root port inclus depuis 2026-05-11).  
 **Status : RÉSOLU côté workaround** — aucun `device lost` sur les crashs 12–16 (5 crashs, 3 sessions gaming).
-Fix upstream attendu : PCI quirk `drivers/pci/quirks.c` (`PCI_DEV_FLAGS_NO_D3COLD`, non soumis).
+Fix upstream : PCI quirk `drivers/pci/quirks.c` — **soumis** : https://bugzilla.kernel.org/show_bug.cgi?id=221540
 
 ---
 
@@ -75,7 +75,7 @@ compute VKD3D. `KWIN_DRM_NO_DIRECT_SCANOUT=1` ne couvre pas ce chemin.
 
 ## Registre des crashs
 
-16 crashs capturés par le service `amdgpu-coredump-poll`.
+17 crashs capturés par le service `amdgpu-coredump-poll`.
 
 | # | Timestamp | Kernel | MES fw | Workarounds actifs | Cause racine | Offender | Ring | Recovery | Outcome |
 |---|-----------|--------|--------|--------------------|--------------|----------|------|----------|---------|
@@ -95,6 +95,7 @@ compute VKD3D. `KWIN_DRM_NO_DIRECT_SCANOUT=1` ne couvre pas ce chemin.
 | 14 | 2026-05-11 23:13 | ogc2 | p1 v0x89² | NO_DIRECT_SCANOUT + D3cold rule (00:03.1 inclus) + runpm=0 | MES null ptr (**0x705c**, v0x89) | enshrouded.exe | gfx_0.0.0 (gap=2) | Ring reset (×2) | Reboot |
 | 15 | 2026-05-13 20:47 | ogc2 | p1 v0x89² | NO_DIRECT_SCANOUT + D3cold rule (00:03.1 inclus) + runpm=0 | GFX + SDMA ring hang (idle) | Oxygen Train.ex⁴ (dxvk-submit) | sdma1 (gap=1) + gfx_0.0.0 (gap=2) | Ring reset | Récupéré (sdma0 fallback timers continus) |
 | 16 | 2026-05-13 20:53 | ogc2 | p1 v0x89² | idem | SDMA ring hang (idle, suite crash 15) | Oxygen Train.ex (dxvk-submit) | sdma1 (gap=1) | Ring reset | Récupéré |
+| 17 | 2026-05-17 19:43 | ogc5 | v0x89 (p1 retiré) | NO_DIRECT_SCANOUT + D3cold rule + runpm=0 | MES null ptr (v0x89, 0x705c absent du journal⁶) | kwin_wayland | gfx_0.0.0 (gap=2) | Ring reset failed → MODE1 | Récupéré — DCN gelé (flip_done timeout) |
 
 ¹ kwin_wayland loggé comme offender car dernier soumetteur — GPU était à 100% charge de jeu au
 moment du crash MES. Le jeu était la vraie charge, kwin n'est pas la cause.  
@@ -108,7 +109,11 @@ l'offset 0xa2f en moins d'une minute. Testé et supprimé immédiatement.
 ⁵ Crashs 15/16 : offender `Oxygen Train.ex` = jeu Windows via Proton/DXVK. GPU à 4 MHz SCLK /
 Load=1% au crash — même cause que crashs 1-4 (GPU en GFXOFF lors d'une soumission DXVK).
 `KWIN_DRM_NO_DIRECT_SCANOUT=1` ne couvre pas le chemin de soumission DXVK. Après crash 15,
-sdma0 continuait d'expirer ses fallback timers jusqu'au crash 16 (~5 min plus tard).
+sdma0 continuait d'expirer ses fallback timers jusqu'au crash 16 (~5 min plus tard).  
+⁶ Crash 17 (ogc5) : le GFXHUB page fault (`regCP_MES_INSTR_PNTR = 0x705c`) n'apparaît plus
+dans le journal kernel — comportement différent d'ogc1/ogc2 pour le même firmware v0x89. Le MES
+est quand même mort (5× REMOVE_QUEUE timeout). SCLK au crash = 3317 MHz, Load = 100% (Cause C,
+pas Cause A). Coredump capturé dans `crash-20260517-194327`.
 
 ---
 
@@ -119,7 +124,7 @@ sdma0 continuait d'expirer ses fallback timers jusqu'au crash 16 (~5 min plus ta
 | `KWIN_DRM_NO_DIRECT_SCANOUT=1` | `/etc/environment` | GFX ring hang (cause 1) | Actif — couvre kwin uniquement ; ne couvre pas DXVK ni VKD3D (crashs 11, 15, 16) |
 | `d3cold_allowed=0` | `/etc/udev/rules.d/99-egpu-no-d3cold.rules` | PCIe bus loss (cause 2) | Actif — couvre toute la chaîne dont `00:03.1` |
 | `amdgpu.runpm=0` | rpm-ostree kargs | DC resume CRTC cassé | Actif |
-| `amd-gpu-firmware p1` | rpm-ostree local override | MES null ptr (cause 3) | Actif — **ne corrige pas le bug** (crash 14 : v0x89 → 0x705c) |
+| ~~`amd-gpu-firmware p1`~~ | rpm-ostree local override | MES null ptr (cause 3) | **Retiré** — ne corrigeait pas le bug (crash 14 : v0x89 → 0x705c) |
 
 ---
 
@@ -146,6 +151,7 @@ Chaque dossier contient : `coredump.bin`, `journal-kernel.txt`, `fence_info.txt`
 | `crash-20260511-231307` | 14 | MES null ptr (**0x705c**, **v0x89** p1 firmware) | `coredump.bin` (INSTR_PNTR=0x705c, fw=0x89 — **p1 non corrigé**) |
 | `crash-20260513-204759` | 15 | GFX + SDMA ring hang (idle / DXVK) | `pm_info.txt` (SCLK=4 MHz, Load=1%), `journal-kernel.txt` (sdma1+gfx timeout) |
 | `crash-20260513-205338` | 16 | SDMA ring hang (idle / DXVK, suite crash 15) | `journal-kernel.txt` (sdma1 timeout — sdma0 fallback timers en continu) |
+| `crash-20260517-194327` | 17 | MES null ptr (v0x89, ogc5 — GFXHUB PF non journalisé) | `pm_info.txt` (SCLK=3314 MHz, Load=100%), `fence_info.txt` (gfx gap=2), `journal-kernel.txt` |
 
 **Note :** les coredumps des crashs 6, 7, 8 contiennent les registres MES
 (`regCP_MES_INSTR_PNTR = 0x705c`) et le page fault GFXHUB. Le coredump du crash 7 a été
@@ -155,11 +161,10 @@ joint au bug report freedesktop#5274.
 
 ## Questions ouvertes
 
-1. **Crash 10 : pourquoi le bus loss se produit-il malgré la règle D3cold ?**  
-   Le root port `00:03.1` n'est pas dans la règle udev. Si lui entre en D3cold, toute la chaîne
-   en aval est coupée. À vérifier : `cat /sys/bus/pci/devices/0000:00:03.1/d3cold_allowed`.
-   Alternative : le bus loss pourrait être dû à une erreur PCIe (CorrErr+/UnsupReq+ déjà présents
-   sur 64:00.0) et non à D3cold.
+1. **Crash 10 : pourquoi le bus loss s'est-il produit malgré la règle D3cold ? → RÉSOLU**  
+   Le root port `00:03.1` n'était pas encore dans la règle udev au moment du crash 10. Il a été
+   ajouté après — aucun bus loss depuis (crashs 12–17). Le bug report PCI quirk est soumis :
+   https://bugzilla.kernel.org/show_bug.cgi?id=221540
 
 2. **Crash 10 : pourquoi le DCN ne récupère pas après le ring reset ?**  
    Le ring reset (MODE1) a réussi mais les écrans sont restés gelés (flip_done timeout persistant).
@@ -175,7 +180,13 @@ joint au bug report freedesktop#5274.
    ogc1 originaux. Le FurMark 30 min ne reproduit pas le crash aussi vite que les jeux (Enshrouded
    déclenche le bug en moins de 30 min). Le fix upstream n'est pas encore disponible.
 
-5. **Incohérence de version firmware entre les boots (v0x8b vs v0x89).**  
-   Les crashs 12/13 (OCI 44.20260511) ont chargé v0x8b malgré l'override p1. Le crash 14 (boot
-   suivant) a chargé v0x89 (p1). Origine probable : switch de déploiement ostree entre deux layers
-   ayant des bases différentes pour `amd-gpu-firmware`. À investiguer.
+5. **Incohérence de version firmware entre les boots (v0x8b vs v0x89). → RÉSOLU**  
+   Les crashs 12/13 (OCI 44.20260511) ont chargé v0x8b (firmware de base ogc2). Le crash 14 avait
+   l'override p1 actif (v0x89). L'override p1 a été retiré au rebase vers 44.20260515 — le système
+   tourne maintenant sur le firmware de base ogc5 (v0x89, identique au p1 en version interne).
+
+6. **Crash 17 (ogc5) : GFXHUB page fault non journalisé.**  
+   Le kernel ogc5 ne logue plus `[gfxhub] Page fault` ni `regCP_MES_INSTR_PNTR` avant le ring
+   timeout, contrairement à ogc1/ogc2 pour le même firmware v0x89. Le MES est quand même mort
+   (5× REMOVE_QUEUE timeout). Possible changement de verbosité ou de chemin de logging dans le
+   driver ogc5. À signaler dans le commentaire #5274.

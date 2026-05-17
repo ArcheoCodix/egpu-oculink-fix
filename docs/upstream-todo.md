@@ -1,14 +1,14 @@
 # Upstream fixes to track / submit
 
 Hardware: GPD Win 4 (Ryzen AI 9 HX 370, Strix Halo) + Minisforum DEG1 OCuLink dock + Sapphire RX 9070 XT (Navi48/RDNA4)
-OS tested: Bazzite 44 desktop, kernel 6.19.14-ogc1.1.fc44
+OS tested: Bazzite 44 desktop, kernel 6.19.14-ogc5.1.fc44
 Bug confirmed also with Nvidia eGPU on Bazzite → not driver-specific, kernel-level issue.
 
 ---
 
-## 1. [KERNEL] PCI quirk: disable D3cold for GPD Win 4 OCuLink slot
+## 1. [KERNEL] PCI quirk: disable D3cold for AMD Navi 10 XL PCIe switch (OCuLink)
 
-**Status:** Not submitted  
+**Status:** Submitted — https://bugzilla.kernel.org/show_bug.cgi?id=221540  
 **Priority:** High — root cause of `device lost from bus` crashes  
 **Workaround:** `/etc/udev/rules.d/99-egpu-no-d3cold.rules`
 
@@ -48,10 +48,10 @@ existing eGPU Thunderbolt quirks.
 Alternatively, the GPD Win 4 ACPI tables should set `_PR3` absence or `_S0W`
 appropriately for the OCuLink slot to prevent the kernel from enabling D3cold.
 
-### Where to file
+### Where filed
 
-- Linux kernel: `drivers/pci/quirks.c` — submit to `linux-pci@vger.kernel.org`
-- OGC kernel: https://github.com/OpenGamingCollective/linux/issues
+- **Bugzilla kernel.org — Filed: https://bugzilla.kernel.org/show_bug.cgi?id=221540**
+- Next step: patch à soumettre à `linux-pci@vger.kernel.org`
 
 ---
 
