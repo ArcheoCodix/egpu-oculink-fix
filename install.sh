@@ -39,8 +39,8 @@ if [ -f "$UDEV_DEST" ]; then
 else
     sudo install -m 644 "$SCRIPT_DIR/udev/99-egpu-no-d3cold.rules" "$UDEV_DEST"
     sudo udevadm control --reload-rules
-    # Apply immediately to running system
-    for dev in 0000:64:00.0 0000:65:00.0 0000:66:00.0 0000:66:00.1; do
+    # Apply immediately to running system (root port first, then downstream chain)
+    for dev in 0000:00:03.1 0000:64:00.0 0000:65:00.0 0000:66:00.0 0000:66:00.1; do
         if [ -f /sys/bus/pci/devices/$dev/d3cold_allowed ]; then
             echo 0 | sudo tee /sys/bus/pci/devices/$dev/d3cold_allowed > /dev/null
         fi
