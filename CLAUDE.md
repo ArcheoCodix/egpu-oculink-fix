@@ -89,15 +89,28 @@ The poll service hardcodes `card1` for the devcoredump path. If the eGPU is
 not card1 (see DRM verification command above), the service won't capture
 crashes — edit `/usr/local/bin/amdgpu-coredump-poll.sh`.
 
-## DS_GFXCLK technical notes
+## DS_GFXCLK / Cause A — root cause and patches
 
-- SMU feature bit 10 = DS_GFXCLK (GFX deep-sleep). Distinct from GFXOFF (bit 18).
-- Disabling DS_GFXCLK via `pp_features` write: driver accepts it but PMFW re-enables it autonomously at idle. No userspace workaround works.
-- Root cause: `smu_v14_0_2_ppt.c` lacks the `PP_SCLK_DEEP_SLEEP_MASK` filter present in navi10, sienna_cichlid, smu_v13_0_0 — `ppfeaturemask` bit 10 is not honoured by the driver.
-- GPU does wake normally under real load (32 MHz → 1711 MHz in ~2 s). Bug is that specific ring paths (kwin flip, DXVK SDMA, VKD3D compute, CS2 VKRenderThread) don't signal the GPU to wake before waiting for ring completion.
-- DS_GFXCLK enters in **<2 seconds** after load drops (confirmed crash #18: 3215 MHz → 0 MHz between two 2s monitor readings).
-- `KWIN_DRM_NO_DIRECT_SCANOUT=1` is **ineffective**: kwin composition path uses the GFX ring regardless. Crashes #18/#19 prove it.
-- **Reliable reproducer**: CS2 → load shaders (100% GPU) → go to menu → GPU idles → kwin flip or CS2 VKRenderThread times out.
+**Root cause (identified 2026-05-19):**
+
+- `sdma_v7_0` is missing `begin_use`/`end_use` callbacks. `sdma_v5_2` has them (for the
+  same bug on SDMA 5.2.3): calls `amdgpu_gfx_off_ctrl(false)` before SDMA ring use,
+  `gfx_off_ctrl(true)` after. This prevents GFXOFF from being active when SDMA submits.
+  The fix was never ported to sdma_v7_0. Clear regression.
+- `gfx_v12_0_ring_begin_use` doesn't call `gfx_off_ctrl(false)`. On RDNA2/3, PMFW
+  auto-exits GFXOFF/DS_GFXCLK on doorbell write. On Navi 48, it does not — doorbell is
+  silently missed. Driver must explicitly disable GFXOFF before ring use.
+
+**Patches:** `patches/0001` (sdma_v7_0) and `patches/0002` (gfx_v12_0). See
+`docs/next-actions.md` for build and test procedure (requires removing `runpm=0`).
+
+**Other notes:**
+- SMU feature bit 10 = DS_GFXCLK, bit 18 = GFXOFF. PMFW controls both autonomously.
+- All userspace PM controls tested and confirmed ineffective (see Cause A workarounds
+  section below).
+- DS_GFXCLK enters in **<2 s** after load drops (crash #18: 3215 MHz → 0 MHz).
+- `KWIN_DRM_NO_DIRECT_SCANOUT=1` **ineffective** — kwin composition uses GFX ring too.
+- **Reliable reproducer**: CS2 → load shaders (100% GPU) → menu → wait ~60s.
 
 ## Cause A workarounds to test (not yet tried)
 

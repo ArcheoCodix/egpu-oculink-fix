@@ -1,17 +1,74 @@
 # Next actions — investigation à reprendre
 
-Mise à jour : 2026-05-18. Deux sessions de test depuis la dernière version.
+Mise à jour : 2026-05-19.
 
 ---
 
-## PRIORITÉ 1 — Audit kernel : wake-signal path Navi 48 (Cause A)
+## PRIORITÉ 1 — Tester les patches kernel Cause A
 
-**Statut : À FAIRE — seule voie viable restante pour Cause A**
+**Statut : PATCHES ÉCRITS — à builder et tester**
 
-Tous les workarounds userspace ont été testés et rejetés (voir section "Pas dans cette
-liste"). PMFW Navi 48 a une autonomie complète sur DS_GFXCLK — aucun message driver
-(DisableSmuFeatures, SetSoftMinByFreq, SetSoftFreqLimitedRange, GFXOFF karg) n'y change
-quoi que ce soit.
+Root cause identifié le 2026-05-19 par audit des sources amdgpu. Deux patches dans
+`patches/` :
+
+- `0001-sdma_v7_0` : régression claire — sdma_v5_2 a exactement le même fix pour le
+  même bug ("SDMA misses doorbells when GFXOFF kicks in"), jamais porté vers sdma_v7_0.
+- `0002-gfx_v12_0` : ajoute `gfx_off_ctrl(false/true)` dans `gfx_v12_0_ring_begin_use/
+  end_use` — RDNA4 PMFW ne sort pas de DS_GFXCLK sur doorbell contrairement à RDNA2/3.
+
+Les deux patches sont des workarounds driver, pas des fixes firmware. Le vrai fix serait
+que PMFW Navi 48 sorte de DS_GFXCLK automatiquement sur activité doorbell (comme RDNA2/3).
+
+### Procédure de build
+
+```bash
+# 1. Récupérer les sources OGC kernel
+dnf download --source kernel 2>/dev/null || \
+  curl -O "https://opengamingcollective.org/rpms/kernel-6.19.14-ogc5.1.fc44.src.rpm"
+rpm2cpio kernel-*.src.rpm | cpio -idmv "*.tar.xz" "*.patch"
+tar xf linux-*.tar.xz
+cd linux-*/
+
+# 2. Appliquer les patches OGC puis nos patches
+# (les patches OGC sont dans le src.rpm — les appliquer d'abord)
+patch -p1 < ~/egpu-oculink-fix/patches/0001-drm-amdgpu-sdma_v7_0-*.patch
+patch -p1 < ~/egpu-oculink-fix/patches/0002-drm-amdgpu-gfx_v12_0-*.patch
+
+# 3. Build juste le module amdgpu
+cp /boot/config-$(uname -r) .config
+make olddefconfig
+make -j$(nproc) M=drivers/gpu/drm/amd/amdgpu CONFIG_DRM_AMDGPU=m 2>&1 | tail -5
+
+# 4. Charger le module patchey (sans reboot)
+sudo rmmod amdgpu
+sudo insmod drivers/gpu/drm/amd/amdgpu/amdgpu.ko
+```
+
+### Précondition critique : retirer amdgpu.runpm=0
+
+`amdgpu_gfx_off_ctrl()` vérifie `PP_GFXOFF_MASK` — ce flag peut être inactif avec
+`runpm=0`. Pour que les patches fonctionnent, retirer `runpm=0` avant le test :
+
+```bash
+rpm-ostree kargs --delete=amdgpu.runpm=0
+# reboot
+```
+
+Risque : sans runpm=0, Cause D (DCN freeze après Cause C) peut survenir. Acceptable
+si les patches éliminent Cause A — Cause D ne survient qu'après Cause B ou C.
+
+### Test
+
+```bash
+# Vérifier que GFXOFF est géré (PP_GFXOFF_MASK actif)
+sudo cat /sys/kernel/debug/dri/1/amdgpu_gfxoff_status
+
+# Reproduire Cause A : CS2 → charger shaders (100% GPU) → aller au menu → attendre
+# Avec sclk-monitor pour confirmer DS_GFXCLK et l'absence de crash
+~/egpu-oculink-fix/scripts/sclk-monitor.sh card1 2
+
+# Si pas de crash après 5 min au menu → patches efficaces
+```
 
 **But :** identifier pourquoi les soumissions ring (kwin flip, DXVK SDMA, VKD3D compute,
 CS2 VKRenderThread) ne réveillent pas le GPU depuis DS_GFXCLK, alors qu'une charge
