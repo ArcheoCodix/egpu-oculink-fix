@@ -1,0 +1,71 @@
+From: Nils Toularastel <nils@toularastel.bzh>
+Date: Mon, 19 May 2026 00:00:00 +0000
+Subject: [PATCH 1/2] drm/amdgpu/sdma_v7_0: add begin_use/end_use to prevent GFXOFF during SDMA
+
+sdma_v5_2 learned (for the 5.2.3/RMB variant) that SDMA misses doorbells
+when GFXOFF kicks in, and explicitly disallows GFXOFF while SDMA is active
+via begin_use/end_use callbacks.
+
+sdma_v7_0 (Navi 48 / RDNA4) suffers from the same issue: when DS_GFXCLK
+or GFXOFF is active, SDMA ring submissions time out after 60s because the
+doorbell is not processed. This manifests as:
+
+  amdgpu: Fence fallback timer expired on ring sdma1
+  amdgpu: ring sdma1 timeout, signaled seq=N, emitted seq=N+1
+
+observed during gaming sessions where the GPU briefly idles between frames
+(SCLK drops to 0-60 MHz, Load ~0%).
+
+Apply the same fix as sdma_v5_2_ring_begin_use(): add begin_use/end_use
+callbacks that call amdgpu_gfx_off_ctrl(false/true) to disallow GFXOFF
+while SDMA is active. See sdma_v5_2.c:1838 for the precedent.
+
+Cc: Alex Deucher <alexander.deucher@amd.com>
+Cc: Christian König <christian.koenig@amd.com>
+Link: https://gitlab.freedesktop.org/drm/amd/-/issues/5294
+Signed-off-by: Nils Toularastel <nils@toularastel.bzh>
+---
+ drivers/gpu/drm/amd/amdgpu/sdma_v7_0.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/drivers/gpu/drm/amd/amdgpu/sdma_v7_0.c b/drivers/gpu/drm/amd/amdgpu/sdma_v7_0.c
+index XXXXXXX..YYYYYYY 100644
+--- a/drivers/gpu/drm/amd/amdgpu/sdma_v7_0.c
++++ b/drivers/gpu/drm/amd/amdgpu/sdma_v7_0.c
+@@ -1614,6 +1614,28 @@ static int sdma_v7_0_set_powergating_state(struct amdgpu_ip_block *ip_block,
+ 	return 0;
+ }
+
++static void sdma_v7_0_ring_begin_use(struct amdgpu_ring *ring)
++{
++	/*
++	 * Like sdma_v5_2: SDMA misses doorbells when GFXOFF/DS_GFXCLK is
++	 * active on Navi 48 (RDNA4), leading to 60s ring timeouts.
++	 * Disallow GFXOFF while SDMA is active to ensure doorbells are
++	 * processed.  Allow it again in end_use() when SDMA is done.
++	 *
++	 * See sdma_v5_2_ring_begin_use() for the same fix on SDMA 5.2.3.
++	 */
++	amdgpu_gfx_off_ctrl(ring->adev, false);
++}
++
++static void sdma_v7_0_ring_end_use(struct amdgpu_ring *ring)
++{
++	/*
++	 * Re-allow GFXOFF now that SDMA is done. Paired with
++	 * sdma_v7_0_ring_begin_use().
++	 */
++	amdgpu_gfx_off_ctrl(ring->adev, true);
++}
++
+ static const struct amdgpu_ring_funcs sdma_v7_0_ring_funcs = {
+ 	.type = AMDGPU_RING_TYPE_SDMA,
+ 	.align_mask = 0xf,
+@@ -1638,6 +1660,8 @@ static const struct amdgpu_ring_funcs sdma_v7_0_ring_funcs = {
+ 	.emit_reg_write_reg_wait = sdma_v7_0_ring_emit_reg_write_reg_wait,
+ 	.init_cond_exec = sdma_v7_0_ring_init_cond_exec,
+ 	.preempt_ib = sdma_v7_0_ring_preempt_ib,
++	.begin_use = sdma_v7_0_ring_begin_use,
++	.end_use   = sdma_v7_0_ring_end_use,
+ 	.reset = sdma_v7_0_reset_queue,
+ };

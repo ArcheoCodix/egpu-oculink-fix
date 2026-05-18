@@ -1,0 +1,55 @@
+From: Nils Toularastel <nils@toularastel.bzh>
+Date: Mon, 19 May 2026 00:00:00 +0000
+Subject: [PATCH 2/2] drm/amdgpu/gfx_v12_0: disable GFXOFF around GFX/compute ring use
+
+On Navi 48 (RDNA4), GFX and compute ring submissions time out after 60s
+when the GPU is in DS_GFXCLK or GFXOFF:
+
+  amdgpu: ring gfx_0.0.0 timeout, signaled seq=N, emitted seq=N+2
+  Process kwin_wayland / cs2 VKRenderThread / vkd3d_queue
+
+Triggered when GPU idles (SCLK 0-60 MHz, Load 0-1%) then receives a ring
+submission. GPU does not exit DS_GFXCLK before the 60s watchdog fires.
+
+Unlike RDNA2/3 (gfx_v10_0/v11_0), which auto-exit GFXOFF on doorbell,
+Navi 48 PMFW requires explicit GFXOFF disable before a doorbell write
+is guaranteed to be processed.
+
+gfx_v12_0_ring_begin_use() already exists for power profile and GFX
+isolation purposes. Add explicit amdgpu_gfx_off_ctrl(false/true) calls
+to disallow GFXOFF while the GFX or compute ring is in use, matching
+the fix applied to sdma_v7_0 (patch 1/2) and the existing precedent
+in sdma_v5_2.
+
+Cc: Alex Deucher <alexander.deucher@amd.com>
+Cc: Christian König <christian.koenig@amd.com>
+Link: https://gitlab.freedesktop.org/drm/amd/-/issues/5294
+Signed-off-by: Nils Toularastel <nils@toularastel.bzh>
+---
+ drivers/gpu/drm/amd/amdgpu/gfx_v12_0.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/drivers/gpu/drm/amd/amdgpu/gfx_v12_0.c b/drivers/gpu/drm/amd/amdgpu/gfx_v12_0.c
+index XXXXXXX..YYYYYYY 100644
+--- a/drivers/gpu/drm/amd/amdgpu/gfx_v12_0.c
++++ b/drivers/gpu/drm/amd/amdgpu/gfx_v12_0.c
+@@ -5471,9 +5471,13 @@ static const struct amd_ip_funcs gfx_v12_0_ip_funcs = {
+
+ static void gfx_v12_0_ring_begin_use(struct amdgpu_ring *ring)
+ {
++	/* Prevent GFXOFF/DS_GFXCLK: RDNA4 PMFW does not auto-exit on doorbell */
++	amdgpu_gfx_off_ctrl(ring->adev, false);
++
+ 	amdgpu_gfx_profile_ring_begin_use(ring);
+-
+ 	amdgpu_gfx_enforce_isolation_ring_begin_use(ring);
+ }
+
+ static void gfx_v12_0_ring_end_use(struct amdgpu_ring *ring)
+ {
+ 	amdgpu_gfx_profile_ring_end_use(ring);
+-
+ 	amdgpu_gfx_enforce_isolation_ring_end_use(ring);
++
++	amdgpu_gfx_off_ctrl(ring->adev, true);
+ }
