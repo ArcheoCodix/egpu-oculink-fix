@@ -14,17 +14,19 @@ s'enchaîner (ex : bus loss → flip_done timeout).
 
 ### 1. GFX ring hang (GPU idle / flip path)
 
-**Symptôme :** timeout du ring `gfx_0.0.0`, gap toujours = 2, offender `kwin_wayland`. GPU à
-très basse fréquence (14–60 MHz SCLK) au moment du crash. Aucune perte de bus, aucun crash MES.
-Reprise par ring reset (MODE1 non nécessaire).
+**Symptôme :** timeout du ring `gfx_0.0.0`, gap = 2 (kwin, DXVK) ou 3 (CS2), offenders variés
+(kwin_wayland, cs2 VKRenderThread, dxvk-submit). GPU à très basse fréquence (0–60 MHz SCLK) au
+moment du crash. Aucune perte de bus, aucun crash MES. Reprise par ring reset simple.
 
-**Cause probable :** le GPU est en état de veille profonde (GFXOFF ou équivalent) quand
-kwin_wayland soumet une commande de flip. La commande ne réveille pas le GPU → timeout 60s.
+**Cause probable :** le GPU entre en DS_GFXCLK (SCLK 0–92 MHz) très rapidement dès que la charge
+cesse (en <2 s). La soumission suivante (kwin flip, DXVK, CS2 render) ne signale pas le GPU pour
+le réveiller avant d'attendre la complétion → timeout 60s.
 
-**Workaround actif :** `KWIN_DRM_NO_DIRECT_SCANOUT=1` — redirige le chemin de présentation kwin
-via un buffer intermédiaire, évite le flip direct sur le GFX ring. **Ne couvre pas** les
-soumissions DXVK ni VKD3D (crashs 11, 15, 16).  
-**Status : workaround partiel, cause racine non corrigée upstream.**
+**Workaround actif :** `KWIN_DRM_NO_DIRECT_SCANOUT=1` — installé dans
+`~/.config/plasma-workspace/env/kwin.sh` et `~/.config/environment.d/kwin.conf`. **Ne couvre pas**
+les soumissions DXVK, VKD3D, ni les chemins de composition kwin (crash 18 : kwin toujours
+offender malgré le flag actif). Workaround de fait **inefficace sur Cause A**.  
+**Status : aucun workaround efficace. Cause racine non corrigée upstream.**
 
 ---
 
@@ -75,7 +77,7 @@ compute VKD3D. `KWIN_DRM_NO_DIRECT_SCANOUT=1` ne couvre pas ce chemin.
 
 ## Registre des crashs
 
-17 crashs capturés par le service `amdgpu-coredump-poll`.
+19 crashs capturés par le service `amdgpu-coredump-poll`.
 
 | # | Timestamp | Kernel | MES fw | Workarounds actifs | Cause racine | Offender | Ring | Recovery | Outcome |
 |---|-----------|--------|--------|--------------------|--------------|----------|------|----------|---------|
@@ -96,6 +98,8 @@ compute VKD3D. `KWIN_DRM_NO_DIRECT_SCANOUT=1` ne couvre pas ce chemin.
 | 15 | 2026-05-13 20:47 | ogc2 | p1 v0x89² | NO_DIRECT_SCANOUT + D3cold rule (00:03.1 inclus) + runpm=0 | GFX + SDMA ring hang (idle) | Oxygen Train.ex⁴ (dxvk-submit) | sdma1 (gap=1) + gfx_0.0.0 (gap=2) | Ring reset | Récupéré (sdma0 fallback timers continus) |
 | 16 | 2026-05-13 20:53 | ogc2 | p1 v0x89² | idem | SDMA ring hang (idle, suite crash 15) | Oxygen Train.ex (dxvk-submit) | sdma1 (gap=1) | Ring reset | Récupéré |
 | 17 | 2026-05-17 19:43 | ogc5 | v0x89 (p1 retiré) | NO_DIRECT_SCANOUT + D3cold rule + runpm=0 | MES null ptr (v0x89, 0x705c absent du journal⁶) | kwin_wayland | gfx_0.0.0 (gap=2) | Ring reset failed → MODE1 | Récupéré — DCN gelé (flip_done timeout) |
+| 18 | 2026-05-18 21:53 | ogc5 | v0x89 | NO_DIRECT_SCANOUT + D3cold rule + runpm=0 | GFX + SDMA ring hang (idle) | kwin_wayland⁷ | sdma1 (timer) + gfx_0.0.0 (gap=2) | Ring reset | Récupéré |
+| 19 | 2026-05-18 21:54 | ogc5 | v0x89 | idem | GFX + SDMA ring hang (idle, suite crash 18) | **cs2** VKRenderThread⁷ | gfx_0.0.0 (gap=3) + sdma0 | Ring reset | Récupéré |
 
 ¹ kwin_wayland loggé comme offender car dernier soumetteur — GPU était à 100% charge de jeu au
 moment du crash MES. Le jeu était la vraie charge, kwin n'est pas la cause.  
@@ -152,6 +156,8 @@ Chaque dossier contient : `coredump.bin`, `journal-kernel.txt`, `fence_info.txt`
 | `crash-20260513-204759` | 15 | GFX + SDMA ring hang (idle / DXVK) | `pm_info.txt` (SCLK=4 MHz, Load=1%), `journal-kernel.txt` (sdma1+gfx timeout) |
 | `crash-20260513-205338` | 16 | SDMA ring hang (idle / DXVK, suite crash 15) | `journal-kernel.txt` (sdma1 timeout — sdma0 fallback timers en continu) |
 | `crash-20260517-194327` | 17 | MES null ptr (v0x89, ogc5 — GFXHUB PF non journalisé) | `pm_info.txt` (SCLK=3314 MHz, Load=100%), `fence_info.txt` (gfx gap=2), `journal-kernel.txt` |
+| `crash-20260518-215358` | 18 | GFX + SDMA ring hang (idle / kwin + CS2 début) | `pm_info.txt` (SCLK=0 MHz, Load=0%, VDDGFX=65 mV), `journal-kernel.txt` |
+| `crash-20260518-215403` | 19 | GFX + SDMA ring hang (idle / CS2 VKRenderThread, suite 18) | `journal-kernel.txt` (cs2 offender + sdma0 timeout) |
 
 **Note :** les coredumps des crashs 6, 7, 8 contiennent les registres MES
 (`regCP_MES_INSTR_PNTR = 0x705c`) et le page fault GFXHUB. Le coredump du crash 7 a été
@@ -190,3 +196,11 @@ joint au bug report freedesktop#5274.
    timeout, contrairement à ogc1/ogc2 pour le même firmware v0x89. Le MES est quand même mort
    (5× REMOVE_QUEUE timeout). Possible changement de verbosité ou de chemin de logging dans le
    driver ogc5. À signaler dans le commentaire #5274.
+
+7. **Crashs 18/19 (CS2 natif) : KWIN_DRM_NO_DIRECT_SCANOUT inefficace sur Cause A.**  
+   Flag actif dans `~/.config/plasma-workspace/env/kwin.sh` et `~/.config/environment.d/kwin.conf`.
+   kwin_wayland est quand même le premier offender (gfx_0.0.0, gap=2). Le flag bloque le chemin
+   scanout direct mais pas la composition — kwin compose toujours via le GFX ring. Workaround Cause
+   A à réviser dans CLAUDE.md : "inefficace" plutôt que "couvre le chemin kwin".  
+   CS2 (VKRenderThread, gap=3) confirme que Cause A touche le Vulkan natif Source 2 — pas
+   spécifique DXVK/VKD3D. Voir note ⁷ dans le registre.

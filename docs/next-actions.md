@@ -5,33 +5,42 @@ le temps + l'occasion.
 
 ---
 
-## 1. Test jeu natif Linux Vulkan (Cause C)
+## 1. Test jeu natif Linux Vulkan (Cause C) — RÉSULTAT PARTIEL 2026-05-18
 
-**But :** déterminer si le crash MES null ptr `0x705c` est spécifique au pattern
-de soumission de queues compute de VKD3D-Proton, ou s'il survient aussi avec un
-moteur Vulkan natif.
+**But initial :** déterminer si le crash MES null ptr `0x705c` est spécifique au pattern
+VKD3D-Proton, ou s'il survient aussi avec un moteur Vulkan natif.
 
-**Hypothèse :** tous nos crashs Cause C confirmés sont via Proton (Enshrouded,
-PEAK.exe). Si un jeu natif Linux ne déclenche pas le crash en charge soutenue
-similaire, le bug MES dépend du pattern VKD3D — workaround possible côté
-DXVK/VKD3D plutôt qu'attendre un firmware AMD.
+### Résultat CS2 (2026-05-18, crashs 18/19)
 
-**Candidats jeux natifs Vulkan :**
-- Baldur's Gate 3 (Larian, natif Linux/Vulkan)
+CS2 (Counter-Strike 2, Source 2 Vulkan natif) a crashé en **Cause A** (GFX ring hang idle),
+pas Cause C (MES null ptr). Détails dans crash-registry.md crashs 18/19.
+
+- GPU chargeait CS2 à 100% (SCLK 3215 MHz) → menu → DS_GFXCLK en <2 s → kwin flip timeout
+- CS2 VKRenderThread also touché (gfx_0.0.0, gap=3 — nouveau pattern)
+- Pas de GFXHUB page fault, pas de MES failure → **pas Cause C**
+
+**Enseignement clé :** Cause A touche le Vulkan natif (CS2 Source 2), pas uniquement DXVK/VKD3D.
+L'hypothèse "bug spécifique VKD3D" pour Cause A est **réfutée**.
+
+**KWIN_DRM_NO_DIRECT_SCANOUT=1 inefficace :** flag actif dans 2 emplacements, kwin est quand
+même le premier offender. Le flag ne couvre pas la composition, seulement le scanout direct.
+
+### Test Cause C encore à faire
+
+CS2 n'a pas atteint une session de charge soutenue 30+ min (crash Cause A au menu). Pour tester
+si Cause C touche le Vulkan natif, il faut :
+1. Patcher Cause A d'abord (ou tester sous charge continue sans passage par le menu)
+2. OU utiliser BG3/Dota2 avec une session de jeu actif 30+ min (pas juste menu)
+
+**Candidats restants :**
+- Baldur's Gate 3 (natif Linux/Vulkan) — recommandé
 - DOTA 2 (Source 2 Vulkan natif)
-- No Man's Sky (natif Vulkan)
-- DXVK pur sans Proton si possible
 
-**Protocole :**
-1. Lancer `~/egpu-oculink-fix/scripts/sclk-monitor.sh card1 2` avant le jeu
-2. Session de 30-45 min de charge soutenue (équivalent Enshrouded qui crash en <30 min)
-3. Si crash : vérifier `/var/log/amdgpu-coredumps/crash-*/` pour signature MES
-   (chercher `MES failed to respond` dans `journal-kernel.txt`)
-4. Si pas de crash après 45+ min : forte indication que c'est spécifique VKD3D-Proton
-
-**Décision après test :**
-- Crash natif identique → fix doit venir d'AMD (firmware), on reste sur #5274
-- Pas de crash natif → poster sur #5274 + ouvrir issue côté DXVK/VKD3D-Proton
+**Protocole (identique à l'original) :**
+1. `~/egpu-oculink-fix/scripts/sclk-monitor.sh card1 2` avant le jeu
+2. Session 30-45 min de charge soutenue (pas menu, jeu actif)
+3. Si crash Cause C → fix doit venir d'AMD, rester sur #5274
+4. Si pas de crash Cause C → bug MES spécifique VKD3D-Proton, ouvrir issue côté DXVK/VKD3D
 
 ---
 
