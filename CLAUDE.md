@@ -108,32 +108,24 @@ watch -n1 "cat /sys/class/drm/card1/device/gpu_busy_percent; \
   cat /sys/class/drm/card1/device/hwmon/hwmon*/freq1_input"
 ```
 
-### 1. amdgpu.gfxoff=0 kernel parameter (reboot required, persistent)
-```bash
-rpm-ostree kargs --append=amdgpu.gfxoff=0
-# reboot, test CS2 → menu
-```
-Prevents PP_GFXOFF_MASK from being set at driver init. Only remaining untested option.
-Note: `amdgpu_gfxoff` debugfs write returned EINVAL with current config (runpm=0 seems
-to lock GFXOFF state). This karg may lift that lock.
+### All userspace workarounds exhausted — Rejected, tested 2026-05-18
 
-### Rejected — tested 2026-05-18, confirmed ineffective on Navi 48 / smu_v14_0_2
-- `amdgpu_gfxoff 0` — EINVAL both passes. amdgpu.runpm=0 appears to lock GFXOFF state.
-  pp_features shows GFXOFF (bit 18) enabled in PMFW, but debugfs write is rejected.
-- `force_performance_level=high` — PMFW ignores SetSoftMinByFreq for GFXCLK.
-  pp_dpm_sclk state 1 stays active (DS_GFXCLK), SCLK stays 20–60 MHz idle.
-- `amdgpu_force_sclk 500/2520` — PMFW ignores SetSoftFreqLimitedRange.
-  Write accepted (no error), pp_dpm_sclk state 1 still active, SCLK unchanged.
-- `pp_features` write to disable DS_GFXCLK bit 10 — PMFW re-enables autonomously
-- `ppfeaturemask` — smu_v14_0_2_ppt.c missing PP_SCLK_DEEP_SLEEP_MASK filter
-- `KWIN_DRM_NO_DIRECT_SCANOUT=1` — composition path still uses GFX ring (crash #18)
-- `pp_dpm_sclk` mask — state 1 IS DS_GFXCLK, no intermediate state above it
-- `amdgpu.uni_mes=0` — legacy MES crashes faster (crash #9, <1 min)
+- `amdgpu.gfxoff=0` karg — tested 2026-05-18. GFXOFF and DS_GFXCLK both remain
+  "enabled" in pp_features. SCLK still 9–57 MHz at idle (state 1 active). No effect.
+  Karg removed (rpm-ostree kargs --delete=amdgpu.gfxoff=0).
+- `amdgpu_gfxoff 0` — EINVAL. Likely locked by runpm=0.
+- `force_performance_level=high` — PMFW ignores SetSoftMinByFreq. State 1 stays active.
+- `amdgpu_force_sclk 500/2520` — write accepted, PMFW ignores SetSoftFreqLimitedRange.
+- `pp_features` write (bit 10) — PMFW re-enables DS_GFXCLK autonomously.
+- `ppfeaturemask` — smu_v14_0_2_ppt.c missing PP_SCLK_DEEP_SLEEP_MASK filter.
+- `KWIN_DRM_NO_DIRECT_SCANOUT=1` — composition path still uses GFX ring (crash #18).
+- `pp_dpm_sclk` mask — state 1 IS DS_GFXCLK, no intermediate state above it.
+- `amdgpu.uni_mes=0` — legacy MES crashes faster (crash #9, <1 min).
 
-**Conclusion**: PMFW on Navi 48 has complete autonomy over GFXCLK. All userspace
-PM controls (DisableSmuFeatures, SetSoftMinByFreq, SetSoftFreqLimitedRange) are
-ignored. Only remaining paths: `amdgpu.gfxoff=0` karg (untested), or kernel patch
-to insert explicit GPU wake before ring submission (next-actions.md action 3).
+**Conclusion**: PMFW on Navi 48 has complete autonomy over GFXCLK. Every driver
+request (DisableSmuFeatures, SetSoftMinByFreq, SetSoftFreqLimitedRange, GFXOFF karg)
+is ignored. Only remaining path: kernel patch to insert explicit GPU wake signal
+before ring submission (next-actions.md action 3).
 
 ## Useful live commands
 
