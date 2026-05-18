@@ -73,7 +73,7 @@ Draft reports in `~/freedesktop-bug-report/`:
 
 ~/egpu-oculink-fix/                — this repo
   docs/topo.md                     — executive summary, source of truth
-  docs/crash-registry.md           — per-crash log (17 entries)
+  docs/crash-registry.md           — per-crash log (19 entries)
   docs/crash-analysis.md           — detailed analysis & rejected workarounds
   docs/upstream-todo.md            — upstream items to file/track
   docs/next-actions.md             — pending tests (native game, fw bisection)
@@ -94,7 +94,60 @@ crashes — edit `/usr/local/bin/amdgpu-coredump-poll.sh`.
 - SMU feature bit 10 = DS_GFXCLK (GFX deep-sleep). Distinct from GFXOFF (bit 18).
 - Disabling DS_GFXCLK via `pp_features` write: driver accepts it but PMFW re-enables it autonomously at idle. No userspace workaround works.
 - Root cause: `smu_v14_0_2_ppt.c` lacks the `PP_SCLK_DEEP_SLEEP_MASK` filter present in navi10, sienna_cichlid, smu_v13_0_0 — `ppfeaturemask` bit 10 is not honoured by the driver.
-- GPU does wake normally under real load (32 MHz → 1711 MHz in ~2 s). Bug is that specific ring paths (kwin flip, DXVK SDMA, VKD3D compute) don't signal the GPU to wake before waiting for ring completion.
+- GPU does wake normally under real load (32 MHz → 1711 MHz in ~2 s). Bug is that specific ring paths (kwin flip, DXVK SDMA, VKD3D compute, CS2 VKRenderThread) don't signal the GPU to wake before waiting for ring completion.
+- DS_GFXCLK enters in **<2 seconds** after load drops (confirmed crash #18: 3215 MHz → 0 MHz between two 2s monitor readings).
+- `KWIN_DRM_NO_DIRECT_SCANOUT=1` is **ineffective**: kwin composition path uses the GFX ring regardless. Crashes #18/#19 prove it.
+- **Reliable reproducer**: CS2 → load shaders (100% GPU) → go to menu → GPU idles → kwin flip or CS2 VKRenderThread times out.
+
+## Cause A workarounds to test (not yet tried)
+
+Ordered by invasiveness. Use CS2 as the reproducer (shader load → menu → wait).
+After each attempt, confirm SCLK stays >0 MHz at menu with:
+```bash
+watch -n1 "cat /sys/class/drm/card1/device/gpu_busy_percent; \
+  cat /sys/class/drm/card1/device/hwmon/hwmon*/freq1_input"
+```
+
+### 1. Disable GFXOFF via debugfs (no reboot, reversible)
+```bash
+echo 0 | sudo tee /sys/kernel/debug/dri/1/amdgpu_gfxoff
+# test CS2 → menu — SCLK should stay above 0
+# restore: echo 1 | sudo tee /sys/kernel/debug/dri/1/amdgpu_gfxoff
+```
+If DS_GFXCLK is a sub-state of GFXOFF, this blocks both. Different mechanism from
+`pp_features` write (DisableSmuFeatures) which PMFW ignores.
+
+### 2. force_performance_level=high (no reboot, high power cost)
+```bash
+echo high | sudo tee /sys/class/drm/card1/device/power_dpm_force_performance_level
+# test CS2 → menu
+# restore: echo auto | sudo tee ...
+```
+Uses SetHardMinByFreq/SetSoftMinByFreq — distinct SMU messages from DisableSmuFeatures.
+PMFW may honour HardMin even when it ignores feature masks. ~10–15 W idle overhead.
+
+### 3. amdgpu_force_sclk (no reboot)
+```bash
+echo 500 | sudo tee /sys/kernel/debug/dri/1/amdgpu_force_sclk
+# test CS2 → menu — SCLK should stay ≥ 500 MHz
+# restore: echo 0 | sudo tee ...
+```
+May map directly to SetHardMinByFreq(PPCLK_GFXCLK). Not confirmed for smu_v14_0_2.
+
+### 4. amdgpu.gfxoff=0 kernel parameter (reboot required, persistent)
+```bash
+rpm-ostree kargs --append=amdgpu.gfxoff=0
+# reboot, test CS2 → menu
+```
+Disables GFXOFF at driver init. Persistent across reboots. If option 1 works,
+this is its persistent equivalent.
+
+### Rejected (already confirmed ineffective)
+- `pp_features` write to disable DS_GFXCLK bit 10 — PMFW re-enables autonomously
+- `ppfeaturemask` — smu_v14_0_2_ppt.c missing PP_SCLK_DEEP_SLEEP_MASK filter
+- `KWIN_DRM_NO_DIRECT_SCANOUT=1` — composition path still uses GFX ring
+- `pp_dpm_sclk` mask — state 1 IS DS_GFXCLK, no intermediate state above it
+- `amdgpu.uni_mes=0` — legacy MES crashes faster (crash #9, <1 min)
 
 ## Useful live commands
 
